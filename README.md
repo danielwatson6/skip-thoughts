@@ -11,7 +11,7 @@ git clone https://github.com/danielwatson6/skip-thoughts.git
 
 To obtain the training data, navigate to [https://www.smashwords.com/] and navigate the website to restrict the books to obtain to the desired categories (e.g. only free books of >=20,000 word length, of a certain genre, etc.). The resulting URL in the browser with the paginated list of books can be passed to this script to download all books in English that are available in text file format:
 ```bash
-python smashwords.py [URL] [SAVE_DIRECTORY (defaults to ./output)]
+python smashwords.py [URL] [SAVE_DIRECTORY (defaults to ./books)]
 # Example: python smashwords.py https://www.smashwords.com/books/category/1/newest/0/free/medium 
 ```
 

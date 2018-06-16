@@ -1,6 +1,6 @@
 """Book scraping script for smashwords.com.
 
-Usage: python smashwords.py [scrape_link] [output_dir (default "output")]
+Usage: python smashwords.py [scrape_link] [output_dir (defaults to ./books)]
 """
 
 import os
@@ -19,7 +19,7 @@ def get_filename(s):
 
 if __name__ == '__main__':
 
-  write_dir = 'output'
+  write_dir = 'books'
   if len(sys.argv) > 2:
     write_dir = sys.argv[2]
 
