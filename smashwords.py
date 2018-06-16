@@ -1,0 +1,55 @@
+"""Book scraping script for smashwords.com.
+
+Usage: python smashwords.py [scrape_link] [output_dir (default "output")]
+"""
+
+import os
+import re
+import sys
+
+from bs4 import BeautifulSoup
+import requests as req
+
+
+def get_filename(s):
+  """Convert the given string to a valid filename."""
+  s = str(s).strip().replace(' ', '_')
+  return re.sub(r'(?u)[^-\w.]', '', s)
+
+
+if __name__ == '__main__':
+
+  write_dir = 'output'
+  if len(sys.argv) > 2:
+    write_dir = sys.argv[2]
+
+  count = 5000
+  num_downloaded = 0
+  while True:
+    res = req.get((sys.argv[1] + '/{}').format(count))
+    soup = BeautifulSoup(res.text, 'html.parser')
+    for div in soup.find_all('div', {'class': 'library-book'}):
+      
+      # Detect language
+      language_html = div.find('div', {'class': 'subnote'})
+      language_html = language_html.find_all('span', {'class': 'text-nowrap'})
+      language_html = ''.join(map(lambda tag: tag.get_text(), language_html))
+      
+      if 'english' in language_html.lower():
+      
+        # Get title and download link
+        link_html = div.find('a', {'class': 'library-title'})
+        title = link_html.get_text()
+        link = link_html.get('href').split('/')
+        link[-2] = 'download'
+        link.append('6')
+        
+        download = req.get('/'.join(link)).text
+        if not download.startswith('<!DOCTYPE html>'):
+          num_downloaded += 1
+          print(num_downloaded, title, sep='\t')
+          with open(os.path.join(write_dir, get_filename(title)), 'w') as f:
+            f.write(download)
+    
+    count += 20
+
