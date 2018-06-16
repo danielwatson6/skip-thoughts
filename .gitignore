@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+Icon?
+
+# Skip Thoughts
+word2vecModel*
+books/
+output/
+
