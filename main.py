@@ -54,8 +54,9 @@ def build_encoder(inputs, seq_length):
   """When called, adds the encoder layer to the computational graph."""
   fw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size, name="encoder_fw")
   bw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size, name="encoder_bw")
-  return tf.nn.bidirectional_dynamic_rnn(
+  rnn_output = tf.nn.bidirectional_dynamic_rnn(
     fw_cell, bw_cell, inputs, sequence_length=seq_length, dtype=tf.float32)
+  return sum(rnn_output[1])
 
 
 def build_decoder(thought, labels, embedding_matrix, name_id=0):
@@ -70,17 +71,17 @@ def build_decoder(thought, labels, embedding_matrix, name_id=0):
   # right by adding a start-of-string token (id: 2).
   sos_tokens = tf.tile([[2]], [FLAGS.batch_size, 1])
   shifted_labels = tf.concat([sos_tokens, labels[::-1]], axis=1)
-  seq_length = get_sequence_length(shifted_labels)
+  seq_lengths = get_sequence_length(shifted_labels)
   decoder_in = get_embeddings(shifted_labels)
   helper = seq2seq.ScheduledEmbeddingTrainingHelper(
-    decoder_in, seq_length, get_embeddings, FLAGS.sample_prob)
+    decoder_in, seq_lengths, get_embeddings, FLAGS.sample_prob)
   # Final layer for both decoders that converts decoder output to predictions.
-  if name_id > 0:
-     tf.get_variable_scope().reuse_variables()
+  # if name_id > 0:
+  #    tf.get_variable_scope().reuse_variables()
   output_layer = tf.layers.Dense(FLAGS.vocabulary_size, name="output_layer")
   decoder = seq2seq.BasicDecoder(
     cell, helper, thought, output_layer=output_layer)
-  return seq2seq.dynamic_decode(decoder, impute_finished=True)
+  return seq2seq.dynamic_decode(decoder, impute_finished=True)[0].rnn_output
 
 
 def build_model():
@@ -108,10 +109,11 @@ def build_model():
   fw_logits = build_decoder(thought, fw_labels, embedding_matrix)
   bw_logits = build_decoder(thought, fw_labels, embedding_matrix,
                             name_id=1)
-  
+  print(fw_logits)
+
   # Mask the loss to avoid taking padding tokens into account.
-  fw_mask = tf.sequence_mask(fw_length, FLAGS.max_length, dtype=tf.float32)
-  bw_mask = tf.sequence_mask(bw_length, FLAGS.max_length, dtype=tf.float32)
+  fw_mask = tf.cast(tf.sign(fw_labels), tf.float32)
+  bw_mask = tf.cast(tf.sign(bw_labels), tf.float32)
   loss = seq2seq.sequence_loss(fw_logits, fw_labels, fw_mask) + \
          seq2seq.sequence_loss(bw_logits, bw_labels, bw_mask)
 
