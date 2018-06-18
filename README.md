@@ -1,6 +1,6 @@
 # skip-thoughts
 
-Simple implementation of skip-thought vectors ([Kiros et al., 2015][https://arxiv.org/abs/1506.06726]). This repository can be used to generate general-purpose sentence embeddings for numerous NLP tasks, and gives the means to obtain the data and train the model.
+Simple implementation of skip-thought vectors ([Kiros et al., 2015](https://arxiv.org/abs/1506.06726). This repository can be used to generate general-purpose sentence embeddings for numerous NLP tasks, and gives the means to obtain the data and train the model.
 
 ## Usage
 
