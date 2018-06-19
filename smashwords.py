@@ -29,7 +29,7 @@ if __name__ == '__main__':
   if len(sys.argv) > 2:
     write_dir = sys.argv[2]
 
-  count = 5000
+  count = 0
   num_downloaded = 0
   while True:
     res = browse((sys.argv[1] + '/{}').format(count))
