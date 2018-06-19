@@ -4,7 +4,6 @@ import os
 import random
 import time
 
-import numpy as np ## todo delete
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
 from gensim.models import KeyedVectors
@@ -184,11 +183,12 @@ def batches(seqs):
     if len(batch_buffer) == FLAGS.batch_size:
       yield batch_buffer
       batch_buffer = []
+  # TODO: `train_batches` is receiving 0's instead of arrays of 0's...
   # Check for remainder sentences and pad the rest of the batch.
-  if len(batch_buffer) > 0:
-    while len(batch_buffer) < FLAGS.batch_size:
-      batch_buffer.append([0] * FLAGS.max_length)
-    yield batch_buffer
+  # if len(batch_buffer) > 0:
+  #   while len(batch_buffer) < FLAGS.batch_size:
+  #     batch_buffer.append([0 for _ in range(FLAGS.max_length)])
+  #   yield batch_buffer
 
 
 def train_batches(seqs):
