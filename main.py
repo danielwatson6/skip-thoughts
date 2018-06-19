@@ -1,6 +1,8 @@
 import argparse
+import itertools
 import os
 import random
+import time
 
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
@@ -16,7 +18,7 @@ parser.add_argument('--vocabulary_size', type=int, default=20000,
   help="Keep only the n most common words of the training data.")
 parser.add_argument('--batch_size', type=int, default=16,
   help="Stochastic gradient descent minibatch size.")
-parser.add_argument('--hidden_size', type=int, default=512,
+parser.add_argument('--output_size', type=int, default=512,
   help="Number of hidden units for the encoder and decoder GRUs.")
 parser.add_argument('--max_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
@@ -24,8 +26,13 @@ parser.add_argument('--sample_prob', type=float, default=.3,
   help="Decoder probability to sample from its predictions duing training.")
 parser.add_argument('--max_grad_norm', type=float, default=5.,
   help="Clip gradients to the specified maximum norm.")
-parser.add_argument('--train_embeddings', type=bool, default=False,
-  help="Set to backpropagate over the word embedding matrix.")
+parser.add_argument('--concat', type=bool, default=False,
+  help="Set to true to concatenate rather than add the biRNN outputs. "
+       "Note this doubles the dimension of the output vectors.")
+parser.add_argument('--train_word_embeddings', type=bool, default=False,
+  help="Set to backpropagate over the word embeddings.")
+parser.add_argument('--train_special_embeddings', type=bool, default=False,
+  help="Set to backpropagate over the special token embeddings.")
 parser.add_argument('--eos_token', type=bool, default=False,
   help="Set to use the end-of-string token when running on inference.")
 parser.add_argument('--epochs', type=int, default=10,
@@ -52,16 +59,18 @@ def get_sequence_length(seq):
 
 def build_encoder(inputs, seq_length):
   """When called, adds the encoder layer to the computational graph."""
-  fw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size, name="encoder_fw")
-  bw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size, name="encoder_bw")
+  fw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="encoder_fw")
+  bw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="encoder_bw")
   rnn_output = tf.nn.bidirectional_dynamic_rnn(
     fw_cell, bw_cell, inputs, sequence_length=seq_length, dtype=tf.float32)
+  if FLAGS.concat:
+    return tf.concat(rnn_output[1], 0)
   return sum(rnn_output[1])
 
 
 def build_decoder(thought, labels, embedding_matrix, name_id=0):
   """When called, adds a decoder layer to the computational graph."""
-  cell = tf.nn.rnn_cell.GRUCell(FLAGS.hidden_size, name="decoder%d" % name_id)
+  cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="decoder%d" % name_id)
   
   # For convenience-- this gets passed as an argument later.
   def get_embeddings(query):
@@ -70,7 +79,7 @@ def build_decoder(thought, labels, embedding_matrix, name_id=0):
   # Scheduled sampling with constant probability. Labels are shifted to the
   # right by adding a start-of-string token (id: 2).
   sos_tokens = tf.tile([[2]], [FLAGS.batch_size, 1])
-  shifted_labels = tf.concat([sos_tokens, labels[::-1]], axis=1)
+  shifted_labels = tf.concat([sos_tokens, labels[::-1]], 1)
   seq_lengths = get_sequence_length(shifted_labels)
   decoder_in = get_embeddings(shifted_labels)
   helper = seq2seq.ScheduledEmbeddingTrainingHelper(
@@ -84,7 +93,7 @@ def build_decoder(thought, labels, embedding_matrix, name_id=0):
   return seq2seq.dynamic_decode(decoder, impute_finished=True)[0].rnn_output
 
 
-def build_model():
+def build_model(initial_word_embeddings=None):
   """When called, builds the whole computational graph.."""
   inputs = tf.placeholder(
     tf.int32, shape=[FLAGS.batch_size, FLAGS.max_length], name="inputs")
@@ -98,12 +107,22 @@ def build_model():
   lr = tf.Variable(FLAGS.initial_lr, trainable=False, name="lr")
   step = tf.Variable(0, trainable=False, name="global_step")
 
-  w2v_model = KeyedVectors.load(FLAGS.embeddings_path, mmap='r')
-  embedding_matrix = tf.Variable(
-    w2v_model.syn0[:FLAGS.vocabulary_size],
-    trainable=FLAGS.train_embeddings, name="embedding_matrix")
-  embeddings = tf.nn.embedding_lookup(embedding_matrix, inputs)
+  # The padding, unknown, start-of-string and end-of-string tokens.
+  # Initialized with a random uniform of mean 0 and variance 1.
+  sqrt3 = 3. ** .5
+  special_embeddings = tf.get_variable(
+    "special_embeddings", [4, FLAGS.embedding_size],
+    initializer=tf.random_uniform_initializer(-sqrt3, sqrt3),
+    trainable=FLAGS.train_special_embeddings)
+
+  word_embeddings = tf.get_variable(
+    "word_embeddings", [FLAGS.vocabulary_size, FLAGS.embedding_size],
+    initializer=tf.constant_initializer(initial_word_embeddings),
+    trainable=FLAGS.train_word_embeddings)
   
+  embedding_matrix = tf.concat([special_embeddings, word_embeddings], 0)
+  embeddings = tf.nn.embedding_lookup(embedding_matrix, inputs)
+
   thought = build_encoder(embeddings, input_length)
 
   fw_logits = build_decoder(thought, fw_labels, embedding_matrix)
@@ -124,10 +143,10 @@ def build_model():
   train_op = tf.train.AdamOptimizer(lr).apply_gradients(
     zip(grads, tvars), global_step=step)
 
-  return inputs, fw_labels, bw_labels, thought, loss, lr, step, train_op
+  return inputs, fw_labels, bw_labels, thought, loss, step, train_op
 
 
-def sequences(fp):
+def sequences(fp, w2v_model):
   """Yield the integer id sentences from a file object."""
   sentence_buffer = []
   # Compensate for go token and the end-of-string token if requested.
@@ -138,7 +157,12 @@ def sequences(fp):
   for line in fp:
     words = line.split()
     for word in words:
-      sentence_buffer.append(...)
+      if word in w2v_model:
+        # Add 4 to compensate for the special seq2seq tokens.
+        sentence_buffer.append(w2v_model[word].index + 4)
+      else:
+        # Unknown word (id: 1)
+        sentence_buffer.append(1)
       if len(sentence_buffer) == max_length or word == '.':
         if append_eos:
           sentence_buffer.append(3)
@@ -164,13 +188,28 @@ def batches(seqs):
     yield batch_buffer
 
 
+def train_batches(seqs):
+  """Similar to the `batches` method, but yields in triples."""
+  ts = itertools.tee(seqs, 3)
+  for i, t in enumerate(ts[1:]):
+    for _ in range(i + 1):
+      next(t, None)
+  # The outer zip transposes batches-of-triples to triples-of-batches
+  # and the inner zip yields the contiguous sequence triples.
+  return zip(*batches(zip(*ts))):
+    
+
+
 if __name__ == '__main__':
-  
+  print("Loading word vector model...")
+  w2v_model = KeyedVectors.load(FLAGS.embeddings_path, mmap='r')
+
   print("Building computational graph...")
   graph = tf.Graph()
   with graph.as_default():
-    inputs, fw_l, bw_l, thought, loss, lr, step, train_op = build_model()
-
+    inputs, fw_l, bw_l, thought, loss, step, train_op = build_model(
+      w2v_model.syn0[:FLAGS.vocabulary_size])
+  
   with tf.Session(graph=graph) as sess:
     # Check if model can be restored
     saver = tf.train.Saver()
@@ -189,7 +228,7 @@ if __name__ == '__main__':
     # Inference
     if FLAGS.encode:
       with open(FLAGS.encode) as fp:
-        for batch in batches(sequences(fp)):
+        for batch in batches(sequences(fp, w2v_model)):
           encoded_batch = sess.run(thought, feed_dict={inputs: batch})
           for v in encoded_batch:
             # The VEC string makes the resulting lines grep-able.
@@ -203,14 +242,12 @@ if __name__ == '__main__':
         random.shuffle(file_list)
         for filename in os.listdir(FLAGS.dataset_path):
           with open(filename) as fp:
-            # TODO: can we find a way to not read the entire file?
-            seqs = list(sequences(fp))
-            # Since `batches` is a generator, this won't copy `seqs`
-            in_batches = batches(seqs[1:-1])
-            fw_batches = batches(seqs[2:])
-            bw_batches = batches(seqs[:-2])
-            for in_, fw, bw in zip(in_batches, fw_batches, bw_batches):
-              step_loss, _ = sess.run(
+            for in_, fw, bw in train_batches(sequences(fp, w2v_model)):
+              start = time.time()
+              loss_, _ = sess.run(
                 [loss, train_op], feed_dict={inputs: in_, fw_l: fw, bw_l: bw})
-              print("Step", sess.run(step), "(loss={0:})")
+              duration = time.time() - start
+              print(
+                "Step", sess.run(step),
+                "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
 
