@@ -15,6 +15,11 @@ python smashwords.py [URL] [SAVE_DIRECTORY (defaults to ./books)]
 # Example: python smashwords.py https://www.smashwords.com/books/category/1/newest/0/free/medium 
 ```
 
+To clean the training data, there is a script provided that will overwrite all files in the input directory with their clean versions. In this context, cleaning means turning sentences into lines and only keeping alphanumeric characters, hyphens, apostrophes, and spaces. Note that `main.py` expects sentences to be lines. Usage:
+```bash
+python clean.py [TARGET_DIRECTORY]
+```
+
 We use Google's pre-trained 300-dimensional word vectors, which can be downloaded [here](https://drive.google.com/file/d/0B7XkCwpI5KDYNlNUTTlSS21pQmM/edit?usp=sharing) (this link just mirrors the download link of the [official website](https://code.google.com/archive/p/word2vec/)). The general model is of course independent of what word vectors are fed.
 
 To train the model, change hyperparameters, or get sentence embeddings, see the help page of the main script:
