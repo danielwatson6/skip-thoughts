@@ -8,10 +8,16 @@ import re
 import sys
 
 from bs4 import BeautifulSoup
-import requests as req
+import requests
 
 
-def get_filename(s):
+def browse(url):
+  """Retrieve the server response contents of the given URL."""
+  # A cookie is required to allow books with adult content to be served.
+  return requests.get(url, cookies={"adultOff": "no"}).text
+
+
+def to_filename(s):
   """Convert the given string to a valid filename."""
   s = str(s).strip().replace(' ', '_')
   return re.sub(r'(?u)[^-\w.]', '', s)
@@ -26,8 +32,8 @@ if __name__ == '__main__':
   count = 5000
   num_downloaded = 0
   while True:
-    res = req.get((sys.argv[1] + '/{}').format(count))
-    soup = BeautifulSoup(res.text, 'html.parser')
+    res = browse((sys.argv[1] + '/{}').format(count))
+    soup = BeautifulSoup(res, 'html.parser')
     for div in soup.find_all('div', {'class': 'library-book'}):
       
       # Detect language
@@ -42,13 +48,13 @@ if __name__ == '__main__':
         title = link_html.get_text()
         link = link_html.get('href').split('/')
         link[-2] = 'download'
-        link.append('6')
+        link.append('6')  # text file format
         
-        download = req.get('/'.join(link)).text
+        download = browse('/'.join(link))
         if not download.startswith('<!DOCTYPE html>'):
           num_downloaded += 1
           print(num_downloaded, title, sep='\t')
-          with open(os.path.join(write_dir, get_filename(title)), 'w') as f:
+          with open(os.path.join(write_dir, to_filename(title)), 'w') as f:
             f.write(download)
     
     count += 20
