@@ -7,6 +7,9 @@ env/
 .DS_Store
 Icon?
 
+# Vim
+*.swp
+
 # Skip Thoughts
 word2vecModel*
 books/
