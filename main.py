@@ -110,13 +110,14 @@ def build_model(initial_word_embeddings=None):
   # The padding, unknown, start-of-string and end-of-string tokens.
   # Initialized with a random uniform of mean 0 and variance 1.
   sqrt3 = 3. ** .5
+  embedding_size = initial_word_embeddings.shape[1]
   special_embeddings = tf.get_variable(
-    "special_embeddings", [4, FLAGS.embedding_size],
+    "special_embeddings", [4, embedding_size],
     initializer=tf.random_uniform_initializer(-sqrt3, sqrt3),
     trainable=FLAGS.train_special_embeddings)
 
   word_embeddings = tf.get_variable(
-    "word_embeddings", [FLAGS.vocabulary_size, FLAGS.embedding_size],
+    "word_embeddings", [FLAGS.vocabulary_size, embedding_size],
     initializer=tf.constant_initializer(initial_word_embeddings),
     trainable=FLAGS.train_word_embeddings)
   
@@ -128,7 +129,6 @@ def build_model(initial_word_embeddings=None):
   fw_logits = build_decoder(thought, fw_labels, embedding_matrix)
   bw_logits = build_decoder(thought, fw_labels, embedding_matrix,
                             name_id=1)
-  print(fw_logits)
 
   # Mask the loss to avoid taking padding tokens into account.
   fw_mask = tf.cast(tf.sign(fw_labels), tf.float32)
@@ -157,12 +157,13 @@ def sequences(fp, w2v_model):
   for line in fp:
     words = line.split()
     for word in words:
+      id_to_append = 1  # unknown word (id: 1)
       if word in w2v_model:
         # Add 4 to compensate for the special seq2seq tokens.
-        sentence_buffer.append(w2v_model[word].index + 4)
-      else:
-        # Unknown word (id: 1)
-        sentence_buffer.append(1)
+        word_id = w2v_model.vocab[word].index + 4
+        if word_id < FLAGS.vocabulary_size:
+          id_to_append = word_id
+      sentence_buffer.append(id_to_append)
       if len(sentence_buffer) == max_length or word == '.':
         if append_eos:
           sentence_buffer.append(3)
@@ -196,7 +197,7 @@ def train_batches(seqs):
       next(t, None)
   # The outer zip transposes batches-of-triples to triples-of-batches
   # and the inner zip yields the contiguous sequence triples.
-  return zip(*batches(zip(*ts))):
+  return map(lambda b: zip(*b), batches(zip(*ts)))
     
 
 
@@ -241,7 +242,7 @@ if __name__ == '__main__':
         file_list = os.listdir(FLAGS.dataset_path)
         random.shuffle(file_list)
         for filename in os.listdir(FLAGS.dataset_path):
-          with open(filename) as fp:
+          with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
             for in_, fw, bw in train_batches(sequences(fp, w2v_model)):
               start = time.time()
               loss_, _ = sess.run(
