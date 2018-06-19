@@ -4,6 +4,7 @@ import os
 import random
 import time
 
+import numpy as np ## todo delete
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
 from gensim.models import KeyedVectors
@@ -80,17 +81,16 @@ def build_decoder(thought, labels, embedding_matrix, name_id=0):
   # right by adding a start-of-string token (id: 2).
   sos_tokens = tf.tile([[2]], [FLAGS.batch_size, 1])
   shifted_labels = tf.concat([sos_tokens, labels[::-1]], 1)
-  seq_lengths = get_sequence_length(shifted_labels)
+  seq_lengths = tf.tile([FLAGS.max_length], [FLAGS.batch_size])
   decoder_in = get_embeddings(shifted_labels)
   helper = seq2seq.ScheduledEmbeddingTrainingHelper(
-    decoder_in, seq_lengths, get_embeddings, FLAGS.sample_prob)
+  decoder_in, seq_lengths, get_embeddings, FLAGS.sample_prob)
+  
   # Final layer for both decoders that converts decoder output to predictions.
-  # if name_id > 0:
-  #    tf.get_variable_scope().reuse_variables()
   output_layer = tf.layers.Dense(FLAGS.vocabulary_size, name="output_layer")
   decoder = seq2seq.BasicDecoder(
     cell, helper, thought, output_layer=output_layer)
-  return seq2seq.dynamic_decode(decoder, impute_finished=True)[0].rnn_output
+  return seq2seq.dynamic_decode(decoder)[0].rnn_output
 
 
 def build_model(initial_word_embeddings=None):
@@ -127,12 +127,13 @@ def build_model(initial_word_embeddings=None):
   thought = build_encoder(embeddings, input_length)
 
   fw_logits = build_decoder(thought, fw_labels, embedding_matrix)
-  bw_logits = build_decoder(thought, fw_labels, embedding_matrix,
+  bw_logits = build_decoder(thought, bw_labels, embedding_matrix,
                             name_id=1)
-
+  
   # Mask the loss to avoid taking padding tokens into account.
   fw_mask = tf.cast(tf.sign(fw_labels), tf.float32)
   bw_mask = tf.cast(tf.sign(bw_labels), tf.float32)
+  
   loss = seq2seq.sequence_loss(fw_logits, fw_labels, fw_mask) + \
          seq2seq.sequence_loss(bw_logits, bw_labels, bw_mask)
 
@@ -147,8 +148,7 @@ def build_model(initial_word_embeddings=None):
 
 
 def sequences(fp, w2v_model):
-  """Yield the integer id sentences from a file object."""
-  sentence_buffer = []
+  """Yield the integer id sentences from a cleaned text file."""
   # Compensate for go token and the end-of-string token if requested.
   append_eos = not FLAGS.encode or FLAGS.eos_token
   max_length = FLAGS.max_length - 1
@@ -156,6 +156,8 @@ def sequences(fp, w2v_model):
     max_length -= 1
   for line in fp:
     words = line.split()
+    seq = []
+
     for word in words:
       id_to_append = 1  # unknown word (id: 1)
       if word in w2v_model:
@@ -163,15 +165,15 @@ def sequences(fp, w2v_model):
         word_id = w2v_model.vocab[word].index + 4
         if word_id < FLAGS.vocabulary_size:
           id_to_append = word_id
-      sentence_buffer.append(id_to_append)
-      if len(sentence_buffer) == max_length or word == '.':
-        if append_eos:
-          sentence_buffer.append(3)
-        # Pad the sentence as a final step (id: 0).
-        while len(sentence_buffer) < FLAGS.max_length:
-          sentence_buffer.append(0)
-        yield sentence_buffer
-        sentence_buffer = []
+      seq.append(id_to_append)
+    
+    seq = seq[:max_length]
+    if append_eos:
+      seq.append(3)  # end-of-string (id: 3)
+    # Pad the sentence as a final step (id: 0).
+    while len(seq) < FLAGS.max_length:
+      seq.append(0)
+    yield seq
 
 
 def batches(seqs):
@@ -198,7 +200,6 @@ def train_batches(seqs):
   # The outer zip transposes batches-of-triples to triples-of-batches
   # and the inner zip yields the contiguous sequence triples.
   return map(lambda b: zip(*b), batches(zip(*ts)))
-    
 
 
 if __name__ == '__main__':
@@ -243,7 +244,7 @@ if __name__ == '__main__':
         random.shuffle(file_list)
         for filename in os.listdir(FLAGS.dataset_path):
           with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
-            for in_, fw, bw in train_batches(sequences(fp, w2v_model)):
+            for bw, in_, fw in train_batches(sequences(fp, w2v_model)):
               start = time.time()
               loss_, _ = sess.run(
                 [loss, train_op], feed_dict={inputs: in_, fw_l: fw, bw_l: bw})
