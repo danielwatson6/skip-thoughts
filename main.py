@@ -47,6 +47,8 @@ parser.add_argument('--dataset_path', type=str, default="./books",
   help="Path to the BookCorpus dataset files.")
 parser.add_argument('--model_name', type=str, default="default",
   help="Will save/restore model in ./output/[model_name].")
+parser.add_argument('--num_steps_per_save', type=int, default=4500,
+  help="Save the model's trainable variables every n steps.")
 
 FLAGS = parser.parse_args()
 
@@ -220,7 +222,7 @@ if __name__ == '__main__':
     if ckpt:
       print("Restoring model...")
       saver.restore(sess, ckpt.model_checkpoint_path)
-      print("Restored model at step", sess.run(global_step))
+      print("Restored model at step", sess.run(step))
     else:
       print("Initializing model...")
       sess.run(tf.global_variables_initializer())
@@ -238,18 +240,44 @@ if __name__ == '__main__':
   
     # Training
     else:
-      for i in range(FLAGS.epochs):
+      # Get number of steps per epoch
+      print("Counting sentences in data...")
+      num_sentences = 0
+      for filename in os.listdir(FLAGS.dataset_path):
+        i = 0  # avoid crashes in empty files
+        with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
+          for i, _ in enumerate(fp, 1):
+            pass
+        # TODO: replace the line below when the problem with the file tail
+        # not being loaded is fixed.
+        # num_sentences += i
+        num_sentences += (i // FLAGS.batch_size) * FLAGS.batch_size
+      num_steps_per_epoch = num_sentences // FLAGS.batch_size
+      current_epoch = sess.run(step) // num_steps_per_epoch
+      print(num_sentences, "sentences ({} steps per epoch)".format(
+        num_steps_per_epoch))
+
+      for i in range(FLAGS.epochs - current_epoch):
         print("Entering epoch %d..." % i)
         file_list = os.listdir(FLAGS.dataset_path)
         random.shuffle(file_list)
         for filename in os.listdir(FLAGS.dataset_path):
           with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
+            
             for bw, in_, fw in train_batches(sequences(fp, w2v_model)):
               start = time.time()
               loss_, _ = sess.run(
                 [loss, train_op], feed_dict={inputs: in_, fw_l: fw, bw_l: bw})
               duration = time.time() - start
+              current_step = sess.run(step)
               print(
-                "Step", sess.run(step),
+                "Step", current_step,
                 "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
+
+              if current_step % FLAGS.num_steps_per_save == 0:
+                print("Saving model...")
+                saver.save(
+                  sess,
+                  os.path.join('output', FLAGS.model_name, 'checkpoint.ckpt'),
+                  global_step=current_step)
 
