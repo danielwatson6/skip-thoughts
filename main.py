@@ -6,6 +6,7 @@ import time
 
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
+from tensorflow.contrib.rnn import GRUBlockCell as RNNCell
 from gensim.models import KeyedVectors
 
 
@@ -22,7 +23,7 @@ parser.add_argument('--output_size', type=int, default=512,
   help="Number of hidden units for the encoder and decoder GRUs.")
 parser.add_argument('--max_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
-parser.add_argument('--sample_prob', type=float, default=.3,
+parser.add_argument('--sample_prob', type=float, default=0.,
   help="Decoder probability to sample from its predictions duing training.")
 parser.add_argument('--max_grad_norm', type=float, default=5.,
   help="Clip gradients to the specified maximum norm.")
@@ -35,7 +36,7 @@ parser.add_argument('--train_special_embeddings', type=bool, default=False,
   help="Set to backpropagate over the special token embeddings.")
 parser.add_argument('--eos_token', type=bool, default=False,
   help="Set to use the end-of-string token when running on inference.")
-parser.add_argument('--epochs', type=int, default=10,
+parser.add_argument('--epochs', type=int, default=1,
   help="Number of epochs to run when training the model.")
 
 # Configuration args
@@ -61,8 +62,8 @@ def get_sequence_length(seq):
 
 def build_encoder(inputs, seq_length):
   """When called, adds the encoder layer to the computational graph."""
-  fw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="encoder_fw")
-  bw_cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="encoder_bw")
+  fw_cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="encoder_fw")
+  bw_cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="encoder_bw")
   rnn_output = tf.nn.bidirectional_dynamic_rnn(
     fw_cell, bw_cell, inputs, sequence_length=seq_length, dtype=tf.float32)
   if FLAGS.concat:
@@ -72,7 +73,7 @@ def build_encoder(inputs, seq_length):
 
 def build_decoder(thought, labels, embedding_matrix, name_id=0):
   """When called, adds a decoder layer to the computational graph."""
-  cell = tf.nn.rnn_cell.GRUCell(FLAGS.output_size, name="decoder%d" % name_id)
+  cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="decoder%d" % name_id)
   
   # For convenience-- this gets passed as an argument later.
   def get_embeddings(query):
