@@ -1,6 +1,6 @@
 # skip-thoughts
 
-Simple implementation of skip-thought vectors ([Kiros et al., 2015](https://arxiv.org/abs/1506.06726)). This repository can be used to generate general-purpose sentence embeddings for numerous NLP tasks, and gives the means to obtain the data, train the model, and port it to any pythons script.
+Simple implementation of skip-thought vectors ([Kiros et al., 2015](https://arxiv.org/abs/1506.06726)). This repository can be used to generate general-purpose sentence embeddings for numerous NLP tasks, and gives the means to obtain the data, train the model, and port it to any python script.
 
 ## Usage
 
@@ -30,19 +30,21 @@ python train.py --help
 To use the model in any python script, follow this basic pattern:
 ```python
 import tensorflow as tf
+from gensim.models import KeyedVectors
 
 from skip_thoughts import SkipThoughts
 
 
+# Initialize the word2vec and skip-thoughts models only once:
+word2vec_model = KeyedVectors.load('path/to/word2vec_file', mmap='r')
 graph = tf.Graph()
 with graph.as_default():
   # Refer to the constructor docstring for more information on the arguments.
-  model = SkipThoughts(word_embeddings_matrix, **kwargs)
+  model = SkipThoughts(word2vec_model, **kwargs)
 
-# Example running the model:
+# Run the model like this as many times as desired:
 with tf.Session(graph=graph):
-  # You must convert the sentences to ID sequences yourself.
-  print(model.encode(list_of_sequences))
+  print(model.encode(sentence_strings))
 ```
 
 ## Dependencies
@@ -51,4 +53,3 @@ All the dependencies are listed in the `requirements.txt` file. They can be inst
 ```bash
 pip install -r requirements.txt
 ```
-

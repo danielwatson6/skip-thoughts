@@ -20,14 +20,14 @@ class SkipThoughts:
   hyperparameter to the model). The start-of-string token is added
   automatically as part of the computational graph during training."""
   
-  def __init__(self, word_embeddings, train=None, batch_size=16,
-    output_size=512, max_sequence_length=40, lr=1e-3, sample_prob=0.,
+  def __init__(self, w2v_model, train=None, vocabulary_size=20000,
+    batch_size=16, output_size=512, embedding_size=300,
+    max_sequence_length=40, lr=1e-3, sample_prob=0., max_grad_norm=10.,
     train_special_embeddings=False, train_word_embeddings=False, concat=False):
     """Build the computational graph.
     
     Args:
-      word_embeddings: a 2D `np.array` instance. Note this matrix should NOT
-                       contain the entries for the four seq2seq special tokens.
+      w2v_model: a word2vec model instance.
     
     Keyword args:
       train: either None (default), or `iterator.get_next()` where `iterator`
@@ -36,15 +36,6 @@ class SkipThoughts:
       
       TODO: complete documentation
     """
-    
-    try:
-      assert isinstance(word_embeddings, np.ndarray)
-      assert word_embeddings.ndim == 2
-    except AssertionError:
-      raise ValueError(
-        "`word_embeddings` argument value must be a 2D numpy array.")
-    
-    # TODO: add error logging if `train` is not a nested structure of tensors
     
     self.learning_rate = tf.get_variable(
       "learning_rate", shape=[], trainable=False,
@@ -58,17 +49,20 @@ class SkipThoughts:
       "global_step", shape=[], trainable=False,
       initializer=tf.intializers.zeros())
     
-    vocabulary_size, embedding_size = word_embeddings.shape
+    self.w2v_model = w2v_model
+    self._max_sequence_length = max_sequence_length
+    self._max_grad_norm = max_grad_norm
     
     # Embedding matrices
+    
     special_embeddings = tf.get_variable(
       "special_embeddings", shape=[4, embedding_size],
       initializer=tf.random_uniform_initializer(-sqrt3, sqrt3),
-      trainable=FLAGS.train_special_embeddings)
+      trainable=train_special_embeddings)
     
     word_embeddings = tf.get_variable(
       "word_embeddings", shape=[vocabulary_size, embedding_size],
-      initializer=tf.constant_initializer(word_embeddings),
+      initializer=tf.constant_initializer(w2v_model.syn0[:vocabulary_size]),
       trainable=train_word_embeddings)
     
     self._embeddings = tf.concat([special_embeddings, word_embeddings], 0)
@@ -104,7 +98,7 @@ class SkipThoughts:
       # Optimizer with gradient clipping
       tvars = tf.trainable_variables()
       grads, _ = tf.clip_by_global_norm(
-        tf.gradients(self.loss, tvars), FLAGS.max_grad_norm)
+        tf.gradients(self.loss, tvars), self._max_grad_norm)
       optimizer = tf.train.AdamOptimizer(self.learning_rate)
       self.train_op = optimizer.apply_gradients(
         zip(grads, tvars), global_step=self.global_step)
@@ -143,7 +137,7 @@ class SkipThoughts:
     shifted_labels = tf.concat([sos_tokens, labels[::-1]], 1)
     
     decoder_in = self._get_embeddings(shifted_labels)
-    max_seq_lengths = tf.tile([self.max_sequence_length], [self.batch_size])
+    max_seq_lengths = tf.tile([self._max_sequence_length], [self.batch_size])
     helper = seq2seq.ScheduledEmbeddingTrainingHelper(
       decoder_in, max_seq_lengths, self._get_embeddings, self.sample_prob)
     
@@ -153,7 +147,24 @@ class SkipThoughts:
     return seq2seq.dynamic_decode(decoder)[0].rnn_output
   
   
-  def encode(self, sequences):
-    """Runs the encoder op."""
+  def _sequence(sentence):
+    """Interally used to convert strings to integer sequences."""
+    words = sentence.split()
+    seq = []
+    # Compensate for start-of-string and end-of-string tokens.
+    for word in words[:FLAGS.max_length - 2]:
+      id_to_append = 1  # unknown word (id: 1)
+      if word in w2v_model:
+        # Add 4 to compensate for the special seq2seq tokens.
+        word_id = self.w2v_model.vocab[word].index + 4
+        if word_id < FLAGS.vocabulary_size:
+          id_to_append = word_id
+      seq.append(id_to_append)
+    return seq
+  
+  
+  def encode(self, sentences):
+    """Runs the encoder op on a list of sentences (sentence strings)."""
     sess = tf.get_default_session()
+    sequences = list(map(self._sequence, sentences))
     return sess.run(self._get_thought, feed_dict={self._inputs: sequences})
