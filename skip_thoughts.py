@@ -26,7 +26,8 @@ class SkipThoughts:
     """Build the computational graph.
     
     Args:
-      word_embeddings: a 2D `np.array` instance.
+      word_embeddings: a 2D `np.array` instance. Note this matrix should NOT
+                       contain the entries for the four seq2seq special tokens.
     
     Keyword args:
       train: either None (default), or `iterator.get_next()` where `iterator`
@@ -110,9 +111,9 @@ class SkipThoughts:
     
     # Inference
     else:
-      self.inputs = tf.placeholder(
+      self._inputs = tf.placeholder(
         tf.int64, shape=[None, max_sequence_length], name="inference_inputs")
-      self.thought = self._thought(self.inputs)
+      self._get_thought = self._thought(self._inputs)
   
   
   def _get_embeddings(self, query):
@@ -150,3 +151,9 @@ class SkipThoughts:
     decoder = seq2seq.BasicDecoder(
       rnn_cell, helper, thought, output_layer=self.output_layer)
     return seq2seq.dynamic_decode(decoder)[0].rnn_output
+  
+  
+  def encode(self, sequences):
+    """Runs the encoder op."""
+    sess = tf.get_default_session()
+    return sess.run(self._get_thought, feed_dict={self._inputs: sequences})

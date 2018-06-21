@@ -15,16 +15,34 @@ python smashwords.py [URL] [SAVE_DIRECTORY (defaults to ./books)]
 # Example: python smashwords.py https://www.smashwords.com/books/category/1/newest/0/free/medium 
 ```
 
-To clean the training data, there is a script provided that will overwrite all files in the input directory with their clean versions. In this context, cleaning means turning sentences into lines and only keeping alphanumeric characters, hyphens, apostrophes, and spaces. Note that `main.py` expects sentences to be lines. Usage:
-```bash
-python clean.py [TARGET_DIRECTORY]
-```
-
 We use Google's pre-trained 300-dimensional word vectors, which can be downloaded [here](https://drive.google.com/file/d/0B7XkCwpI5KDYNlNUTTlSS21pQmM/edit?usp=sharing) (this link just mirrors the download link of the [official website](https://code.google.com/archive/p/word2vec/)). The general model is of course independent of what word vectors are fed.
 
-To train the model, change hyperparameters, or get sentence embeddings, see the help page of the main script:
+To clean the training data, there is a script provided that will textually normalize (sentences are extracted and only alphanumerics and apostrophes are kept) all the files in the input directory, convert the words to unique integer IDs according to the provided word vector model, and save them in the TensorFlow binary format. See the help page for further details:
 ```bash
-python main.py --help
+python clean.py --help
+```
+
+To train the model, change hyperparameters, or get sentence embeddings, see the help page of the training script:
+```bash
+python train.py --help
+```
+
+To use the model in any python script, follow this basic pattern:
+```python
+import tensorflow as tf
+
+from skip_thoughts import SkipThoughts
+
+
+graph = tf.Graph()
+with graph.as_default():
+  # Refer to the constructor docstring for more information on the arguments.
+  model = SkipThoughts(word_embeddings_matrix, **kwargs)
+
+# Example running the model:
+with tf.Session(graph=graph):
+  # You must convert the sentences to ID sequences yourself.
+  print(model.encode(list_of_sequences))
 ```
 
 ## Dependencies
