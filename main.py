@@ -1,12 +1,10 @@
 import argparse
 import itertools
 import os
-import random
 import time
 
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
-from tensorflow.contrib.rnn import GRUBlockCell as RNNCell
 from gensim.models import KeyedVectors
 
 
@@ -36,8 +34,6 @@ parser.add_argument('--train_special_embeddings', type=bool, default=False,
   help="Set to backpropagate over the special token embeddings.")
 parser.add_argument('--eos_token', type=bool, default=False,
   help="Set to use the end-of-string token when running on inference.")
-parser.add_argument('--epochs', type=int, default=1,
-  help="Number of epochs to run when training the model.")
 
 # Configuration args
 parser.add_argument('--encode', type=str, default='',
@@ -62,8 +58,8 @@ def get_sequence_length(seq):
 
 def build_encoder(inputs, seq_length):
   """When called, adds the encoder layer to the computational graph."""
-  fw_cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="encoder_fw")
-  bw_cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="encoder_bw")
+  fw_cell = tf.contrib.rnn.GRUBlockCell(FLAGS.output_size)
+  bw_cell = tf.contrib.rnn.GRUBlockCell(FLAGS.output_size)
   rnn_output = tf.nn.bidirectional_dynamic_rnn(
     fw_cell, bw_cell, inputs, sequence_length=seq_length, dtype=tf.float32)
   if FLAGS.concat:
@@ -73,7 +69,7 @@ def build_encoder(inputs, seq_length):
 
 def build_decoder(thought, labels, embedding_matrix, name_id=0):
   """When called, adds a decoder layer to the computational graph."""
-  cell = tf.nn.rnn_cell.RNNCell(FLAGS.output_size, name="decoder%d" % name_id)
+  cell = tf.contrib.rnn.GRUBlockCell(FLAGS.output_size)
   
   # For convenience-- this gets passed as an argument later.
   def get_embeddings(query):
@@ -149,49 +145,31 @@ def build_model(initial_word_embeddings=None):
   return inputs, fw_labels, bw_labels, thought, loss, step, train_op
 
 
-def sequences(fp, w2v_model):
-  """Yield the integer id sentences from a cleaned text file."""
+def sequence(s, w2v_model):
+  """Yield the integer id sequence from a sentence string."""
   # Compensate for go token and the end-of-string token if requested.
   append_eos = not FLAGS.encode or FLAGS.eos_token
   max_length = FLAGS.max_length - 1
   if append_eos:
     max_length -= 1
-  for line in fp:
-    words = line.split()
-    seq = []
-
-    for word in words:
-      id_to_append = 1  # unknown word (id: 1)
-      if word in w2v_model:
-        # Add 4 to compensate for the special seq2seq tokens.
-        word_id = w2v_model.vocab[word].index + 4
-        if word_id < FLAGS.vocabulary_size:
-          id_to_append = word_id
-      seq.append(id_to_append)
-    
-    seq = seq[:max_length]
-    if append_eos:
-      seq.append(3)  # end-of-string (id: 3)
-    # Pad the sentence as a final step (id: 0).
-    while len(seq) < FLAGS.max_length:
-      seq.append(0)
-    yield seq
-
-
-def batches(seqs):
-  """Yield batches given a sequence iterable."""
-  batch_buffer = []
-  for seq in seqs:
-    batch_buffer.append(seq)
-    if len(batch_buffer) == FLAGS.batch_size:
-      yield batch_buffer
-      batch_buffer = []
-  # TODO: `train_batches` is receiving 0's instead of arrays of 0's...
-  # Check for remainder sentences and pad the rest of the batch.
-  # if len(batch_buffer) > 0:
-  #   while len(batch_buffer) < FLAGS.batch_size:
-  #     batch_buffer.append([0 for _ in range(FLAGS.max_length)])
-  #   yield batch_buffer
+  # Translate words into their unique ids
+  words = s.split()
+  seq = []
+  for word in words[:max_length]:
+    id_to_append = 1  # unknown word (id: 1)
+    if word in w2v_model:
+      # Add 4 to compensate for the special seq2seq tokens.
+      word_id = w2v_model.vocab[word].index + 4
+      if word_id < FLAGS.vocabulary_size:
+        id_to_append = word_id
+    seq.append(id_to_append)
+  # Maybe add the eos token
+  if append_eos:
+    seq.append(3)  # end-of-string (id: 3)
+  # Pad the sentence as a final step (id: 0).
+  while len(seq) < FLAGS.max_length:
+    seq.append(0)
+  return seq
 
 
 def train_batches(seqs):
@@ -205,6 +183,25 @@ def train_batches(seqs):
   return map(lambda b: zip(*b), batches(zip(*ts)))
 
 
+def train_iterator(filenames, w2v_model):
+  """Build the input pipeline for training.."""
+
+  def individual_file_dataset(filename):
+    dataset = tf.data.TextLineDataset(filename)
+    # Map line strings to proper integer sequences
+    dataset = dataset.map(lambda line: sequence(line, w2v_model))
+    # Get triples of batches
+    dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
+      window_size=FLAGS.batch_size, stride=1))
+    return dataset.apply(tf.contrib.data.sliding_window_batch(
+      window_size=3, stride=FLAGS.batch_size))
+  
+  dataset = tf.data.from_tensor_slices(filenames)
+  dataset = dataset.flat_map(individual_file_dataset)
+  dataset = dataset.prefetch(1)
+  return dataset.make_one_shot_iterator()
+
+
 if __name__ == '__main__':
   print("Loading word vector model...")
   w2v_model = KeyedVectors.load(FLAGS.embeddings_path, mmap='r')
@@ -215,6 +212,18 @@ if __name__ == '__main__':
     inputs, fw_l, bw_l, thought, loss, step, train_op = build_model(
       w2v_model.syn0[:FLAGS.vocabulary_size])
   
+  # Get number of steps
+  # print("Counting sentences in data...")
+  # num_sentences = 0
+  # for filename in os.listdir(FLAGS.dataset_path):
+  #   i = 0
+  #   with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
+  #     for i, _ in enumerate(fp, 1):
+  #       pass
+  #   num_sentences += i
+  # num_steps = num_sentences // FLAGS.batch_size
+  # print(num_sentences, "sentences ({} steps)".format(num_steps))
+
   with tf.Session(graph=graph) as sess:
     # Check if model can be restored
     saver = tf.train.Saver()
@@ -241,44 +250,23 @@ if __name__ == '__main__':
   
     # Training
     else:
-      # Get number of steps per epoch
-      print("Counting sentences in data...")
-      num_sentences = 0
-      for filename in os.listdir(FLAGS.dataset_path):
-        i = 0  # avoid crashes in empty files
-        with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
-          for i, _ in enumerate(fp, 1):
-            pass
-        # TODO: replace the line below when the problem with the file tail
-        # not being loaded is fixed.
-        # num_sentences += i
-        num_sentences += (i // FLAGS.batch_size) * FLAGS.batch_size
-      num_steps_per_epoch = num_sentences // FLAGS.batch_size
-      current_epoch = sess.run(step) // num_steps_per_epoch
-      print(num_sentences, "sentences ({} steps per epoch)".format(
-        num_steps_per_epoch))
+      iterator = train_iterator(os.listdir(FLAGS.dataset_path), w2v_model)
+  
+      while True:
+        bw, in_, fw = iterator.get_next()
+        start = time.time()
+        loss_, _ = sess.run(
+          [loss, train_op], feed_dict={inputs: in_, fw_l: fw, bw_l: bw})
+        duration = time.time() - start
+        current_step = sess.run(step)
+        print(
+          "Step", current_step,
+          "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
 
-      for i in range(FLAGS.epochs - current_epoch):
-        print("Entering epoch %d..." % i)
-        file_list = os.listdir(FLAGS.dataset_path)
-        random.shuffle(file_list)
-        for filename in os.listdir(FLAGS.dataset_path):
-          with open(os.path.join(FLAGS.dataset_path, filename)) as fp:
-            
-            for bw, in_, fw in train_batches(sequences(fp, w2v_model)):
-              start = time.time()
-              loss_, _ = sess.run(
-                [loss, train_op], feed_dict={inputs: in_, fw_l: fw, bw_l: bw})
-              duration = time.time() - start
-              current_step = sess.run(step)
-              print(
-                "Step", current_step,
-                "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
-
-              if current_step % FLAGS.num_steps_per_save == 0:
-                print("Saving model...")
-                saver.save(
-                  sess,
-                  os.path.join('output', FLAGS.model_name, 'checkpoint.ckpt'),
-                  global_step=current_step)
+        if current_step % FLAGS.num_steps_per_save == 0:
+          print("Saving model...")
+          saver.save(
+            sess,
+            os.path.join('output', FLAGS.model_name, 'checkpoint.ckpt'),
+            global_step=current_step)
 
