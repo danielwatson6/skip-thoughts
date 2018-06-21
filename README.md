@@ -42,8 +42,11 @@ with graph.as_default():
   # Refer to the constructor docstring for more information on the arguments.
   model = SkipThoughts(word2vec_model, **kwargs)
 
-# Run the model like this as many times as desired:
 with tf.Session(graph=graph):
+  # Restore the model only once:
+  model.restore(save_dir)  # pass in the directory where the .ckpt files live.
+  
+  # Run the model like this as many times as desired.
   print(model.encode(sentence_strings))
 ```
 
