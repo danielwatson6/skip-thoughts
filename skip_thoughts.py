@@ -22,8 +22,9 @@ class SkipThoughts:
   
   def __init__(self, w2v_model, train=None, vocabulary_size=20000,
     batch_size=16, output_size=512, embedding_size=300,
-    max_sequence_length=40, lr=1e-3, sample_prob=0., max_grad_norm=10.,
-    train_special_embeddings=False, train_word_embeddings=False, concat=False):
+    max_sequence_length=40, learning_rate=1e-3, sample_prob=0.,
+    max_grad_norm=10., concat=False, train_special_embeddings=False,
+    train_word_embeddings=False):
     """Build the computational graph.
     
     Args:
@@ -47,17 +48,18 @@ class SkipThoughts:
     
     self.global_step = tf.get_variable(
       "global_step", shape=[], trainable=False,
-      initializer=tf.intializers.zeros())
+      initializer=tf.initializers.zeros())
     
-    self.w2v_model = w2v_model
+    self._w2v_model = w2v_model
+    self._batch_size = batch_size
     self._max_sequence_length = max_sequence_length
     self._max_grad_norm = max_grad_norm
+    self._concat = concat
     
     # Embedding matrices
-    
     special_embeddings = tf.get_variable(
       "special_embeddings", shape=[4, embedding_size],
-      initializer=tf.random_uniform_initializer(-sqrt3, sqrt3),
+      initializer=tf.random_uniform_initializer(-np.sqrt(3), np.sqrt(3)),
       trainable=train_special_embeddings)
     
     word_embeddings = tf.get_variable(
@@ -69,9 +71,9 @@ class SkipThoughts:
     
     # RNN cells
     RNNCell = tf.contrib.rnn.GRUBlockCell
-    self._fw_cell = RNNCell(self.output_size, name="fw_cell")
-    self._bw_cell = RNNCell(self.output_size, name="bw_cell")
-    self._dec_cell = RNNCell(self.output_size, name="dec_cell")
+    self._fw_cell = RNNCell(output_size, name="fw_cell")
+    self._bw_cell = RNNCell(output_size, name="bw_cell")
+    self._dec_cell = RNNCell(output_size, name="dec_cell")
     
     # Softmax layer
     self.output_layer = tf.layers.Dense(vocabulary_size, name="output_layer")
@@ -80,7 +82,8 @@ class SkipThoughts:
     if train is not None:
       
       # Unpack iterator ops
-      bw_labels, train_inputs, fw_labels = train
+      print(train)
+      bw_labels, train_inputs, fw_labels = tf.unstack(train, num=3)
       
       # Encoder
       thought = self._thought(train_inputs)
@@ -123,21 +126,21 @@ class SkipThoughts:
       self._fw_cell, self._bw_cell, self._get_embeddings(inputs),
       sequence_length=sequence_length, dtype=tf.float32)
     
-    if self.concat:
+    if self._concat:
       return tf.concat(rnn_output[1], 0)
     return sum(rnn_output[1])
   
   
-  def _decoder(thought, labels, rnn_cell):
+  def _decoder(self, thought, labels, rnn_cell):
     """Internally used to build a decoder RNN."""
 
     # Scheduled sampling with constant probability. Labels are shifted to the
     # right by adding a start-of-string token.
-    sos_tokens = tf.tile([[2]], [self.batch_size, 1])
+    sos_tokens = tf.cast(tf.tile([[2]], [self._batch_size, 1]), tf.int64)
     shifted_labels = tf.concat([sos_tokens, labels[::-1]], 1)
     
     decoder_in = self._get_embeddings(shifted_labels)
-    max_seq_lengths = tf.tile([self._max_sequence_length], [self.batch_size])
+    max_seq_lengths = tf.tile([self._max_sequence_length], [self._batch_size])
     helper = seq2seq.ScheduledEmbeddingTrainingHelper(
       decoder_in, max_seq_lengths, self._get_embeddings, self.sample_prob)
     
@@ -156,15 +159,38 @@ class SkipThoughts:
       id_to_append = 1  # unknown word (id: 1)
       if word in w2v_model:
         # Add 4 to compensate for the special seq2seq tokens.
-        word_id = self.w2v_model.vocab[word].index + 4
+        word_id = self._w2v_model.vocab[word].index + 4
         if word_id < FLAGS.vocabulary_size:
           id_to_append = word_id
       seq.append(id_to_append)
     return seq
   
   
+  def restore(self, save_dir, verbose=True):
+    """Attempt to restore the model's weights from the given directory.
+    
+    Returns True or False depending on success."""
+    sess = tf.get_default_session()
+    saver = tf.train.Saver()
+    ckpt = tf.train.get_checkpoint_state(save_dir)
+    if not ckpt:
+      if verbose:
+        print("Failed to restore model at {}.".format(save_dir))
+      return False
+    if verbose:
+      print("Restoring model...")
+    start = time.time()
+    saver.restore(sess, ckpt.model_checkpoint_path)
+    duration = time.time() - start()
+    if verbose:
+      print(
+        "Restored model at step", sess.run(self.global_step),
+        "({:0.4f}s).".format(duration))
+    return True
+  
+  
   def encode(self, sentences):
-    """Runs the encoder op on a list of sentences (sentence strings)."""
+    """Run the encoder op on a list of sentences (sentence strings)."""
     sess = tf.get_default_session()
     sequences = list(map(self._sequence, sentences))
     return sess.run(self._get_thought, feed_dict={self._inputs: sequences})
