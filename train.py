@@ -16,11 +16,11 @@ parser.add_argument('--initial_lr', type=float, default=1e-3,
   help="Initial learning rate.")
 parser.add_argument('--vocabulary_size', type=int, default=20000,
   help="Keep only the n most common words of the training data.")
-parser.add_argument('--batch_size', type=int, default=16,
+parser.add_argument('--batch_size', type=int, default=128,
   help="Stochastic gradient descent minibatch size.")
 parser.add_argument('--output_size', type=int, default=512,
   help="Number of hidden units for the encoder and decoder GRUs.")
-parser.add_argument('--max_length', type=int, default=40,
+parser.add_argument('--max_sequence_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
 parser.add_argument('--sample_prob', type=float, default=0.,
   help="Decoder probability to sample from its predictions duing training.")
@@ -58,7 +58,9 @@ def parse_and_pad(seq):
     serialized=seq, sequence_features=sequence_features)
   # Pad the sequence
   t = sequence_parsed["tokens"]
-  return tf.pad(t, [[0, FLAGS.max_length - tf.shape(t)[0]]])
+  if FLAGS.eos_token:
+    t = tf.pad(t, [[0, 1]], constant_values=3)
+  return tf.pad(t, [[0, FLAGS.max_sequence_length - tf.shape(t)[0]]])
 
 
 def train_iterator(filenames):
@@ -66,7 +68,9 @@ def train_iterator(filenames):
   
   def _single_iterator(skip):
     dataset = tf.data.TFRecordDataset(filenames)
-    dataset = dataset.map(parse_and_pad)  # TODO: add option for parallel calls
+    if skip:
+      dataset = dataset.skip(skip)
+    dataset = dataset.map(parse_and_pad, num_parallel_calls=2)
     return dataset.apply(
       tf.contrib.data.batch_and_drop_remainder(FLAGS.batch_size))
   
@@ -98,8 +102,17 @@ if __name__ == '__main__':
     filenames = [os.path.join(FLAGS.input, f) for f in os.listdir(FLAGS.input)]
     iterator = train_iterator(filenames)
     
-    # TODO: add hyperparameters from argparse
-    m = SkipThoughts(w2v_model, train=iterator)
+    m = SkipThoughts(w2v_model, train=iterator,
+                     vocabulary_size=FLAGS.vocabulary_size,
+                     batch_size=FLAGS.batch_size,
+                     output_size=FLAGS.output_size,
+                     max_sequence_length=FLAGS.max_sequence_length,
+                     learning_rate=FLAGS.initial_lr,
+                     sample_prob=FLAGS.sample_prob,
+                     max_grad_norm=FLAGS.max_grad_norm,
+                     concat=FLAGS.concat,
+                     train_special_embeddings=FLAGS.train_special_embeddings,
+                     train_word_embeddings=FLAGS.train_word_embeddings)
   
   duration = time.time() - start
   print("Done ({:0.4f}s).".format(duration))
@@ -121,12 +134,18 @@ if __name__ == '__main__':
       # Avoid crashes due to directory not existing.
       if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
+    #i = 1000  ##
     while True:
       start = time.time()
       loss_, _ = sess.run([m.loss, m.train_op])
       duration = time.time() - start
       current_step = sess.run(m.global_step)
+      #i = min(i, duration)  ##
+      #if current_step > 100:  ##
+      #  print(i)  ##
+      #  exit()  ##
+      #else:  ##
+      #  continue  ##
       print(
         "Step", current_step,
         "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
@@ -136,4 +155,4 @@ if __name__ == '__main__':
         saver.save(
           sess,
           os.path.join('output', FLAGS.model_name, 'checkpoint.ckpt'),
-          global_step=current_step)
+          global_step=m.global_step)
