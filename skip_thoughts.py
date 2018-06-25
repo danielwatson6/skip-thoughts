@@ -1,5 +1,7 @@
 """Module defining the skip-thoughts model."""
 
+import time
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
@@ -21,10 +23,10 @@ class SkipThoughts:
   automatically as part of the computational graph during training."""
   
   def __init__(self, w2v_model, train=None, vocabulary_size=20000,
-    batch_size=16, output_size=512, embedding_size=300,
-    max_sequence_length=40, learning_rate=1e-3, sample_prob=0.,
-    max_grad_norm=10., concat=False, train_special_embeddings=False,
-    train_word_embeddings=False):
+    batch_size=16, output_size=512, max_sequence_length=40, learning_rate=1e-3,
+    sample_prob=0., max_grad_norm=10., concat=False, optimizer=None,
+    train_special_embeddings=False, train_word_embeddings=False,
+    time_major=False, cuda=False):
     """Build the computational graph.
     
     Args:
@@ -50,47 +52,46 @@ class SkipThoughts:
       "global_step", shape=[], trainable=False,
       initializer=tf.initializers.zeros())
     
+    # Internally used attributes
     self._w2v_model = w2v_model
     self._batch_size = batch_size
+    self._output_size = output_size
     self._max_sequence_length = max_sequence_length
     self._max_grad_norm = max_grad_norm
     self._concat = concat
+    self._time_major = time_major
+    self._cuda = cuda
+    self._embedding_size = w2v_model.vector_size
     
-    # Embedding matrices
+    # Embedding matrices. The special embeddings are initialized with a mean 0
+    # and variance 1 random uniform distribution.
     special_embeddings = tf.get_variable(
-      "special_embeddings", shape=[4, embedding_size],
+      "special_embeddings", shape=[4, self._embedding_size],
       initializer=tf.random_uniform_initializer(-np.sqrt(3), np.sqrt(3)),
       trainable=train_special_embeddings)
     
     word_embeddings = tf.get_variable(
-      "word_embeddings", shape=[vocabulary_size, embedding_size],
+      "word_embeddings", shape=[vocabulary_size, self._embedding_size],
       initializer=tf.constant_initializer(w2v_model.syn0[:vocabulary_size]),
       trainable=train_word_embeddings)
     
     self._embeddings = tf.concat([special_embeddings, word_embeddings], 0)
     
-    # RNN cells
-    RNNCell = tf.contrib.rnn.GRUBlockCell
-    self._fw_cell = RNNCell(output_size, name="fw_cell")
-    self._bw_cell = RNNCell(output_size, name="bw_cell")
-    self._dec_cell = RNNCell(output_size, name="dec_cell")
-    
     # Softmax layer
-    self.output_layer = tf.layers.Dense(vocabulary_size, name="output_layer")
+    self._output_layer = tf.layers.Dense(vocabulary_size, name="output_layer")
     
     # Training
     if train is not None:
       
       # Unpack iterator ops
-      print(train)
       bw_labels, train_inputs, fw_labels = tf.unstack(train, num=3)
       
       # Encoder
-      thought = self._thought(train_inputs)
+      self._get_thought = self._thought(train_inputs)
       
       # Forward and backward decoders
-      fw_logits = self._decoder(thought, fw_labels, self._fw_cell)
-      bw_logits = self._decoder(thought, bw_labels, self._bw_cell)
+      fw_logits = self._decoder(self._get_thought, fw_labels)
+      bw_logits = self._decoder(self._get_thought, bw_labels)
       
       # Loss
       fw_mask = tf.cast(tf.sign(fw_labels), tf.float32)
@@ -102,8 +103,9 @@ class SkipThoughts:
       tvars = tf.trainable_variables()
       grads, _ = tf.clip_by_global_norm(
         tf.gradients(self.loss, tvars), self._max_grad_norm)
-      optimizer = tf.train.AdamOptimizer(self.learning_rate)
-      self.train_op = optimizer.apply_gradients(
+      if optimizer is None:
+        optimizer = tf.train.AdamOptimizer
+      self.train_op = optimizer(self.learning_rate).apply_gradients(
         zip(grads, tvars), global_step=self.global_step)
     
     # Inference
@@ -120,34 +122,55 @@ class SkipThoughts:
   
   def _thought(self, inputs):
     """Internally used to run the model agnostic to input feeding method."""
-    sequence_length = tf.reduce_sum(tf.sign(inputs), reduction_indices=1)
+    encoder_in = self._get_embeddings(inputs)
     
-    rnn_output = tf.nn.bidirectional_dynamic_rnn(
-      self._fw_cell, self._bw_cell, self._get_embeddings(inputs),
-      sequence_length=sequence_length, dtype=tf.float32)
+    if self._cuda:
+      rnn = tf.contrib.cudnn_rnn.CudnnGRU(
+        1, self._output_size, direction='bidirectional')
+      rnn_output = tf.unstack(rnn(encoder_in)[1][0])
     
+    else:
+      fw_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(self._output_size)
+      bw_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(self._output_size)
+      sequence_length = tf.reduce_sum(
+        tf.sign(inputs), reduction_indices=int(not self._time_major))
+      rnn_output = tf.nn.bidirectional_dynamic_rnn(
+        fw_cell, bw_cell, encoder_in, sequence_length=sequence_length,
+        dtype=tf.float32, time_major=self._time_major)[1]
+
     if self._concat:
-      return tf.concat(rnn_output[1], 0)
-    return sum(rnn_output[1])
-  
-  
-  def _decoder(self, thought, labels, rnn_cell):
+      return tf.concat(rnn_output, 0)
+    return sum(rnn_output)
+ 
+
+  def _decoder(self, thought, labels):
     """Internally used to build a decoder RNN."""
 
-    # Scheduled sampling with constant probability. Labels are shifted to the
-    # right by adding a start-of-string token.
-    sos_tokens = tf.cast(tf.tile([[2]], [self._batch_size, 1]), tf.int64)
-    shifted_labels = tf.concat([sos_tokens, labels[::-1]], 1)
+    # Labels are shifted to the right by adding a start-of-string token.
+    if self._time_major:
+      sos_tokens = tf.constant([[2] * self._batch_size], dtype=tf.int64)
+      shifted_labels = tf.concat([sos_tokens, labels[:-1]], 0)
+    else:
+      sos_tokens = tf.constant([[2]] * self._batch_size, dtype=tf.int64)
+      shifted_labels = tf.concat([sos_tokens, labels[:,:-1]], 1)
     
     decoder_in = self._get_embeddings(shifted_labels)
-    max_seq_lengths = tf.tile([self._max_sequence_length], [self._batch_size])
-    helper = seq2seq.ScheduledEmbeddingTrainingHelper(
-      decoder_in, max_seq_lengths, self._get_embeddings, self.sample_prob)
+
+    if self._cuda:
+      decoder_out = tf.contrib.cudnn_rnn.CudnnGRU(
+        1, self._output_size, direction='unidirectional')(decoder_in)[0]
+      return self._output_layer(decoder_out)
     
-    # Final layer for both decoders that converts decoder output to 
+    max_seq_lengths = tf.constant(
+      [self._max_sequence_length] * self._batch_size)
+    helper = seq2seq.ScheduledEmbeddingTrainingHelper(
+      decoder_in, max_seq_lengths, self._get_embeddings, self.sample_prob,
+      time_major=self._time_major)
     decoder = seq2seq.BasicDecoder(
-      rnn_cell, helper, thought, output_layer=self.output_layer)
-    return seq2seq.dynamic_decode(decoder)[0].rnn_output
+      tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(self._output_size), helper,
+      thought, output_layer=self._output_layer)
+    return seq2seq.dynamic_decode(
+      decoder, output_time_major=self._time_major)[0].rnn_output
   
   
   def _sequence(sentence):
@@ -181,7 +204,7 @@ class SkipThoughts:
       print("Restoring model...")
     start = time.time()
     saver.restore(sess, ckpt.model_checkpoint_path)
-    duration = time.time() - start()
+    duration = time.time() - start
     if verbose:
       print(
         "Restored model at step", sess.run(self.global_step),
@@ -194,3 +217,4 @@ class SkipThoughts:
     sess = tf.get_default_session()
     sequences = list(map(self._sequence, sentences))
     return sess.run(self._get_thought, feed_dict={self._inputs: sequences})
+
