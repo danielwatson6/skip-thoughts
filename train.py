@@ -10,6 +10,7 @@ from skip_thoughts import SkipThoughts
 
 
 parser = argparse.ArgumentParser()
+argparse_bool = lambda s: s.lower() in ['true', 't', 'yes', '1']
 
 # Hyperparameter args
 parser.add_argument('--initial_lr', type=float, default=1e-3,
@@ -26,15 +27,25 @@ parser.add_argument('--sample_prob', type=float, default=0.,
   help="Decoder probability to sample from its predictions duing training.")
 parser.add_argument('--max_grad_norm', type=float, default=5.,
   help="Clip gradients to the specified maximum norm.")
-parser.add_argument('--concat', type=bool, default=False,
+parser.add_argument('--concat', type=argparse_bool, default=False,
   help="Set to true to concatenate rather than add the biRNN outputs. "
        "Note this doubles the dimension of the output vectors.")
-parser.add_argument('--train_word_embeddings', type=bool, default=False,
-  help="Set to backpropagate over the word embeddings.")
-parser.add_argument('--train_special_embeddings', type=bool, default=False,
-  help="Set to backpropagate over the special token embeddings.")
-parser.add_argument('--eos_token', type=bool, default=False,
+parser.add_argument('--optimizer', type=str, default='adam',
+  help="Currently supports 'adam' and 'sgd'.")
+parser.add_argument('--train_word_embeddings', type=argparse_bool,
+  default=False, help="Set to backpropagate over the word embeddings.")
+parser.add_argument('--train_special_embeddings', type=argparse_bool,
+ default=False, help="Set to backpropagate over the special token embeddings.")
+parser.add_argument('--eos_token', type=argparse_bool, default=True,
   help="Set to use the end-of-string token when running on inference.")
+
+# Performance args
+parser.add_argument('--time_major', type=argparse_bool, default=True,
+  help="Set to feed time-major batches to the RNNs.")
+parser.add_argument('--cuda', type=argparse_bool, default=False,
+  help="Set to False to forcefully disable the use of Cudnn ops.")
+parser.add_argument('--benchmark', type=int, default=0,
+  help="Set to n > 0 to estimate running time by executing n steps.")
 
 # Configuration args
 parser.add_argument('--embeddings_path', type=str, default="word2vecModel",
@@ -43,7 +54,7 @@ parser.add_argument('--input', type=str, default="books_tf",
   help="Path to the directory containing the dataset TFRecord files.")
 parser.add_argument('--model_name', type=str, default="default",
   help="Will save/restore model in ./output/[model_name].")
-parser.add_argument('--num_steps_per_save', type=int, default=4500,
+parser.add_argument('--num_steps_per_save', type=int, default=5000,
   help="Save the model's trainable variables every n steps.")
 
 FLAGS = parser.parse_args()
@@ -66,20 +77,20 @@ def parse_and_pad(seq):
 def train_iterator(filenames):
   """Build the input pipeline for training.."""
   
-  def _single_iterator(skip):
-    dataset = tf.data.TFRecordDataset(filenames)
-    if skip:
-      dataset = dataset.skip(skip)
-    dataset = dataset.map(parse_and_pad, num_parallel_calls=2)
-    return dataset.apply(
-      tf.contrib.data.batch_and_drop_remainder(FLAGS.batch_size))
+  dataset = tf.data.TFRecordDataset(filenames)
+  dataset = dataset.map(parse_and_pad)
   
-  # Get the contiguous batches of triples
-  bw_labels = _single_iterator(0)
-  inputs = _single_iterator(1)
-  fw_labels = _single_iterator(2)
-  
-  dataset = tf.data.Dataset.zip((bw_labels, inputs, fw_labels))
+  #dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
+  #  window_size=FLAGS.batch_size, stride=1))
+  #dataset = dataset.batch(FLAGS.batch_size).map(lambda x: x[:3])
+
+  dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
+    window_size=FLAGS.batch_size, stride=1))
+  dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
+    window_size=3, stride=FLAGS.batch_size))  
+
+  if FLAGS.time_major:
+    dataset = dataset.map(lambda x: tf.transpose(x, perm=[0, 2, 1]))
   dataset = dataset.prefetch(1)
   return dataset.make_one_shot_iterator().get_next()
 
@@ -101,7 +112,19 @@ if __name__ == '__main__':
     
     filenames = [os.path.join(FLAGS.input, f) for f in os.listdir(FLAGS.input)]
     iterator = train_iterator(filenames)
+
+    cuda = FLAGS.cuda
+    gpu_available = tf.test.is_gpu_available(cuda_only=True)
+    if cuda and not (FLAGS.time_major or gpu_available):
+      print("WARNING: disabling CUDA ops. GPU must be available and time "
+            "major mode must be enabled.")
+      cuda = False
     
+    if FLAGS.optimizer == 'adam':
+      optimizer = tf.train.AdamOptimizer
+    else:
+      optimizer = tf.train.GradientDescentOptimizer
+
     m = SkipThoughts(w2v_model, train=iterator,
                      vocabulary_size=FLAGS.vocabulary_size,
                      batch_size=FLAGS.batch_size,
@@ -110,9 +133,10 @@ if __name__ == '__main__':
                      learning_rate=FLAGS.initial_lr,
                      sample_prob=FLAGS.sample_prob,
                      max_grad_norm=FLAGS.max_grad_norm,
-                     concat=FLAGS.concat,
+                     concat=FLAGS.concat, optimizer=optimizer,
                      train_special_embeddings=FLAGS.train_special_embeddings,
-                     train_word_embeddings=FLAGS.train_word_embeddings)
+                     train_word_embeddings=FLAGS.train_word_embeddings,
+                     time_major=FLAGS.time_major, cuda=cuda)
   
   duration = time.time() - start
   print("Done ({:0.4f}s).".format(duration))
@@ -134,18 +158,32 @@ if __name__ == '__main__':
       # Avoid crashes due to directory not existing.
       if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    #i = 1000  ##
+    
+    # Used for benchmarking running time.
+    i = 0
+    min_duration = float('inf')
+    average_duration = 0
+
+    # Training loop.
     while True:
       start = time.time()
       loss_, _ = sess.run([m.loss, m.train_op])
       duration = time.time() - start
       current_step = sess.run(m.global_step)
-      #i = min(i, duration)  ##
-      #if current_step > 100:  ##
-      #  print(i)  ##
-      #  exit()  ##
-      #else:  ##
-      #  continue  ##
+      
+      # Only benchmark running time if requested.
+      if FLAGS.benchmark:
+        i += 1
+        min_duration = min(duration, min_duration)
+        average_duration = (duration + (i - 1) * average_duration ) / i
+      if i >= FLAGS.benchmark:
+        print("Running time benchmarks for", FLAGS.benchmark, "steps:")
+        print("  Average:", average_duration)
+        print("  Minimum:", min_duration)
+        exit()
+      else:
+        continue
+
       print(
         "Step", current_step,
         "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
