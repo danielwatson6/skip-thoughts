@@ -27,7 +27,7 @@ class SkipThoughts:
     batch_size=16, output_size=512, max_sequence_length=40, learning_rate=1e-3,
     max_grad_norm=10., concat=False, optimizer=None, softmax_samples=0,
     train_special_embeddings=False, train_word_embeddings=False,
-    time_major=False, cuda=False):
+    time_major=True, cuda=False):
     """Build the computational graph.
     
     Args:
@@ -109,8 +109,11 @@ class SkipThoughts:
     
     # Inference
     else:
+      shape = [None, max_sequence_length]
+      if time_major:
+        shape = [max_sequence_length, None]
       self._inputs = tf.placeholder(
-        tf.int64, shape=[None, max_sequence_length], name="inference_inputs")
+        tf.int64, shape=shape, name="inference_inputs")
       self._get_thought = self._thought(self._inputs)
   
   
@@ -136,7 +139,7 @@ class SkipThoughts:
       rnn_output = tf.nn.bidirectional_dynamic_rnn(
         fw_cell, bw_cell, encoder_in, sequence_length=sequence_length,
         dtype=tf.float32, time_major=self._time_major)[1]
-
+    
     if self._concat:
       return tf.concat(rnn_output, 0)
     return sum(rnn_output)
@@ -192,7 +195,7 @@ class SkipThoughts:
     return tf.reduce_mean(mask * losses)  # Hadamard product
   
   
-  def _sequence(self, sentence, clean=True):
+  def _sequence(self, sentence, clean=True, eos_token=True):
     """Interally used to convert strings to integer sequences."""
     
     # First the sentences are cleaned to reduce out-of-vocabulary cases.
@@ -204,14 +207,18 @@ class SkipThoughts:
     seq = []
     
     # Compensate for start-of-string and end-of-string tokens.
-    for word in words[:FLAGS.max_length - 2]:
+    for word in words[:self._max_sequence_length - 2]:
       id_to_append = 1  # unknown word (id: 1)
-      if word in w2v_model:
+      if word in self._w2v_model:
         # Add 4 to compensate for the special seq2seq tokens.
         word_id = self._w2v_model.vocab[word].index + 4
-        if word_id < FLAGS.vocabulary_size:
+        if word_id < self._vocabulary_size:
           id_to_append = word_id
       seq.append(id_to_append)
+    if eos_token:
+      seq.append(3)  # end-of-string (id: 3)
+    while len(seq) < self._max_sequence_length:
+      seq.append(0)  # padding (id: 0)
     return seq
   
   
@@ -241,6 +248,8 @@ class SkipThoughts:
   def encode(self, sentences):
     """Run the encoder op on a list of sentences (sentence strings)."""
     sess = tf.get_default_session()
-    sequences = list(map(self._sequence, sentences))
+    sequences = np.array(list(map(self._sequence, sentences)))
+    if self._time_major:
+      sequences = sequences.T
     return sess.run(self._get_thought, feed_dict={self._inputs: sequences})
 
