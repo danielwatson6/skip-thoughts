@@ -142,7 +142,7 @@ if __name__ == '__main__':
   
   
   with tf.Session(graph=graph) as sess:
-    saver = tf.train.Saver()
+    saver = tf.train.Saver(max_to_keep=1)
     output_dir = os.path.join('output', FLAGS.model_name)
     
     if not m.restore(output_dir):
