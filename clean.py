@@ -21,9 +21,9 @@ parser.add_argument('--vocabulary_size', type=int, default=20000,
   help="Keep only the n most common words of the training data.")
 parser.add_argument('--max_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
-parser.add_argument('--input', type=str, default="books",
+parser.add_argument('--input', type=str, default="data/books",
   help="Path to the directory containing the text files.")
-parser.add_argument('--output', type=str, default="books_tf",
+parser.add_argument('--output', type=str, default="data/books_tf",
   help="Path to the directory that will contain the TFRecord files.")
 parser.add_argument('--embeddings_path', type=str, default="./word2vecModel",
   help="Path to the pre-trained word embeddings model.")

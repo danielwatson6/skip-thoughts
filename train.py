@@ -1,3 +1,5 @@
+"""Script for training the skip-thoughts model."""
+
 import argparse
 import itertools
 import os
@@ -50,7 +52,7 @@ parser.add_argument('--benchmark', type=int, default=0,
 # Configuration args
 parser.add_argument('--embeddings_path', type=str, default="word2vecModel",
   help="Path to the pre-trained word embeddings model.")
-parser.add_argument('--input', type=str, default="books_tf",
+parser.add_argument('--input', type=str, default="data/books_tf",
   help="Path to the directory containing the dataset TFRecord files.")
 parser.add_argument('--model_name', type=str, default="default",
   help="Will save/restore model in ./output/[model_name].")

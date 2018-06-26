@@ -12,7 +12,6 @@ Icon?
 
 # Skip Thoughts
 word2vecModel*
-books/
-books_tf/
+data/
 output/
 
