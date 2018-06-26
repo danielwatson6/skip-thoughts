@@ -23,13 +23,13 @@ parser.add_argument('--output_size', type=int, default=512,
   help="Number of hidden units for the encoder and decoder GRUs.")
 parser.add_argument('--max_sequence_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
-parser.add_argument('--sample_prob', type=float, default=0.,
-  help="Decoder probability to sample from its predictions duing training.")
 parser.add_argument('--max_grad_norm', type=float, default=5.,
   help="Clip gradients to the specified maximum norm.")
 parser.add_argument('--concat', type=argparse_bool, default=False,
   help="Set to true to concatenate rather than add the biRNN outputs. "
        "Note this doubles the dimension of the output vectors.")
+parser.add_argument('--softmax_samples', type=int, default=0,
+  help="Set to n > 0 to use sampled softmax with n candidate samples.")
 parser.add_argument('--optimizer', type=str, default='adam',
   help="Currently supports 'adam' and 'sgd'.")
 parser.add_argument('--train_word_embeddings', type=argparse_bool,
@@ -80,14 +80,11 @@ def train_iterator(filenames):
   dataset = tf.data.TFRecordDataset(filenames)
   dataset = dataset.map(parse_and_pad)
   
-  #dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
-  #  window_size=FLAGS.batch_size, stride=1))
-  #dataset = dataset.batch(FLAGS.batch_size).map(lambda x: x[:3])
-
   dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
     window_size=FLAGS.batch_size, stride=1))
-  dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
-    window_size=3, stride=FLAGS.batch_size))  
+  dataset = dataset.batch(FLAGS.batch_size).map(lambda x: x[:3])
+  # dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
+  #   window_size=3, stride=FLAGS.batch_size))  
 
   if FLAGS.time_major:
     dataset = dataset.map(lambda x: tf.transpose(x, perm=[0, 2, 1]))
@@ -131,9 +128,9 @@ if __name__ == '__main__':
                      output_size=FLAGS.output_size,
                      max_sequence_length=FLAGS.max_sequence_length,
                      learning_rate=FLAGS.initial_lr,
-                     sample_prob=FLAGS.sample_prob,
                      max_grad_norm=FLAGS.max_grad_norm,
                      concat=FLAGS.concat, optimizer=optimizer,
+                     softmax_samples=FLAGS.softmax_samples,
                      train_special_embeddings=FLAGS.train_special_embeddings,
                      train_word_embeddings=FLAGS.train_word_embeddings,
                      time_major=FLAGS.time_major, cuda=cuda)
@@ -161,7 +158,7 @@ if __name__ == '__main__':
     
     # Used for benchmarking running time.
     i = 0
-    min_duration = float('inf')
+    min_duration = float('inf')  # infinity
     average_duration = 0
 
     # Training loop.
@@ -176,13 +173,13 @@ if __name__ == '__main__':
         i += 1
         min_duration = min(duration, min_duration)
         average_duration = (duration + (i - 1) * average_duration ) / i
-      if i >= FLAGS.benchmark:
-        print("Running time benchmarks for", FLAGS.benchmark, "steps:")
-        print("  Average:", average_duration)
-        print("  Minimum:", min_duration)
-        exit()
-      else:
-        continue
+        if i >= FLAGS.benchmark:
+          print("Running time benchmarks for", FLAGS.benchmark, "steps:")
+          print("  Average:", average_duration)
+          print("  Minimum:", min_duration)
+          exit()
+        else:
+          continue
 
       print(
         "Step", current_step,

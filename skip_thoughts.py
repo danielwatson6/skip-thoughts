@@ -24,7 +24,7 @@ class SkipThoughts:
   
   def __init__(self, w2v_model, train=None, vocabulary_size=20000,
     batch_size=16, output_size=512, max_sequence_length=40, learning_rate=1e-3,
-    sample_prob=0., max_grad_norm=10., concat=False, optimizer=None,
+    max_grad_norm=10., concat=False, optimizer=None, softmax_samples=0,
     train_special_embeddings=False, train_word_embeddings=False,
     time_major=False, cuda=False):
     """Build the computational graph.
@@ -40,45 +40,45 @@ class SkipThoughts:
       TODO: complete documentation
     """
     
-    self.learning_rate = tf.get_variable(
-      "learning_rate", shape=[], trainable=False,
-      initializer=tf.initializers.constant(learning_rate))
-    
-    self.sample_prob = tf.get_variable(
-      "sample_prob", shape=[], trainable=False,
-      initializer=tf.initializers.constant(sample_prob))
-    
-    self.global_step = tf.get_variable(
-      "global_step", shape=[], trainable=False,
-      initializer=tf.initializers.zeros())
-    
     # Internally used attributes
     self._w2v_model = w2v_model
+    self._vocabulary_size = vocabulary_size
     self._batch_size = batch_size
     self._output_size = output_size
     self._max_sequence_length = max_sequence_length
     self._max_grad_norm = max_grad_norm
     self._concat = concat
+    self._softmax_samples = softmax_samples
     self._time_major = time_major
     self._cuda = cuda
     self._embedding_size = w2v_model.vector_size
+    
+    self.learning_rate = tf.get_variable(
+      "learning_rate", shape=[], trainable=False,
+      initializer=tf.initializers.constant(learning_rate))
+    
+    self.global_step = tf.get_variable(
+      "global_step", shape=[], trainable=False,
+      initializer=tf.initializers.zeros())
     
     # Embedding matrices. The special embeddings are initialized with a mean 0
     # and variance 1 random uniform distribution.
     special_embeddings = tf.get_variable(
       "special_embeddings", shape=[4, self._embedding_size],
-      initializer=tf.random_uniform_initializer(-np.sqrt(3), np.sqrt(3)),
+      initializer=tf.initializers.random_uniform(-np.sqrt(3), np.sqrt(3)),
       trainable=train_special_embeddings)
     
     word_embeddings = tf.get_variable(
       "word_embeddings", shape=[vocabulary_size, self._embedding_size],
-      initializer=tf.constant_initializer(w2v_model.syn0[:vocabulary_size]),
+      initializer=tf.initializers.constant(w2v_model.syn0[:vocabulary_size]),
       trainable=train_word_embeddings)
     
     self._embeddings = tf.concat([special_embeddings, word_embeddings], 0)
     
     # Softmax layer
     self._output_layer = tf.layers.Dense(vocabulary_size, name="output_layer")
+    # Call this to be able to obtain the layer's weights at any given moment.
+    self._output_layer.build(output_size)
     
     # Training
     if train is not None:
@@ -94,10 +94,8 @@ class SkipThoughts:
       bw_logits = self._decoder(self._get_thought, bw_labels)
       
       # Loss
-      fw_mask = tf.cast(tf.sign(fw_labels), tf.float32)
-      bw_mask = tf.cast(tf.sign(bw_labels), tf.float32)
-      self.loss = seq2seq.sequence_loss(fw_logits, fw_labels, fw_mask) + \
-                  seq2seq.sequence_loss(bw_logits, bw_labels, bw_mask)
+      self.loss = self._loss(fw_logits, fw_labels) + \
+                  self._loss(bw_logits, bw_labels)
       
       # Optimizer with gradient clipping
       tvars = tf.trainable_variables()
@@ -159,21 +157,41 @@ class SkipThoughts:
     if self._cuda:
       decoder_out = tf.contrib.cudnn_rnn.CudnnGRU(
         1, self._output_size, direction='unidirectional')(decoder_in)[0]
-      return self._output_layer(decoder_out)
     
-    max_seq_lengths = tf.constant(
-      [self._max_sequence_length] * self._batch_size)
-    helper = seq2seq.ScheduledEmbeddingTrainingHelper(
-      decoder_in, max_seq_lengths, self._get_embeddings, self.sample_prob,
-      time_major=self._time_major)
-    decoder = seq2seq.BasicDecoder(
-      tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(self._output_size), helper,
-      thought, output_layer=self._output_layer)
-    return seq2seq.dynamic_decode(
-      decoder, output_time_major=self._time_major)[0].rnn_output
+    else:
+      rnn_cell = tf.contrib.cudnn_rnn.CudnnCompatibleGRUCell(self._output_size)
+      max_seq_lengths = tf.constant(
+        [self._max_sequence_length] * self._batch_size)
+      helper = seq2seq.TrainingHelper(
+        decoder_in, max_seq_lengths, time_major=self._time_major)
+      decoder = seq2seq.BasicDecoder(rnn_cell, helper, thought)
+      decoder_out = seq2seq.dynamic_decode(
+        decoder, output_time_major=self._time_major)[0].rnn_output
+    
+    return decoder_out
   
   
-  def _sequence(sentence):
+  def _loss(self, rnn_outputs, labels):
+    """Get a properly masked loss for the given logits and labels."""
+    if not self._softmax_samples:
+      mask = tf.cast(tf.sign(labels), tf.float32)
+      logits = self._output_layer(rnn_outputs)
+      return seq2seq.sequence_loss(logits, labels, mask)
+    
+    # Sampled softmax for improved performance.
+    rnn_outputs = tf.reshape(rnn_outputs, [-1, self._output_size])
+    labels = tf.reshape(labels, [-1])
+    mask = tf.cast(tf.sign(labels), tf.float32)
+    
+    weights, biases = self._output_layer.trainable_weights
+    losses = tf.nn.sampled_softmax_loss(
+      tf.transpose(weights), biases, tf.expand_dims(labels, axis=1),
+      rnn_outputs, self._softmax_samples, self._vocabulary_size)
+    
+    return tf.reduce_mean(mask * losses)  # Hadamard product
+  
+  
+  def _sequence(self, sentence):
     """Interally used to convert strings to integer sequences."""
     words = sentence.split()
     seq = []
