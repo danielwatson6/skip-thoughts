@@ -235,3 +235,4 @@ class SkipThoughts:
     sess = tf.get_default_session()
     sequences = list(map(self._sequence, sentences))
     return sess.run(self._get_thought, feed_dict={self._inputs: sequences})
+
