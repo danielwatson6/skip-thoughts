@@ -1,5 +1,6 @@
 """Module defining the skip-thoughts model."""
 
+import re
 import time
 
 import numpy as np
@@ -191,10 +192,17 @@ class SkipThoughts:
     return tf.reduce_mean(mask * losses)  # Hadamard product
   
   
-  def _sequence(self, sentence):
+  def _sequence(self, sentence, clean=True):
     """Interally used to convert strings to integer sequences."""
+    
+    # First the sentences are cleaned to reduce out-of-vocabulary cases.
+    if clean:
+      sentence = re.sub(r"[^A-Za-z0-9 ']", " ", sentence)
+      sentence = re.sub(r"[ ]+", " ", sentence).strip()
+    
     words = sentence.split()
     seq = []
+    
     # Compensate for start-of-string and end-of-string tokens.
     for word in words[:FLAGS.max_length - 2]:
       id_to_append = 1  # unknown word (id: 1)
@@ -212,7 +220,7 @@ class SkipThoughts:
     
     Returns True or False depending on success."""
     sess = tf.get_default_session()
-    saver = tf.train.Saver()
+    saver = tf.train.Saver(max_to_keep=1)
     ckpt = tf.train.get_checkpoint_state(save_dir)
     if not ckpt:
       if verbose:
