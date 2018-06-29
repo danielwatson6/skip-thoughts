@@ -204,7 +204,8 @@ if __name__ == '__main__':
       'time_major': FLAGS.time_major,
     }
     m = Model(
-      w2v_model=w2v_model, input_iterator=iterator, hparams=hparams, cuda=cuda)
+      model_name=FLAGS.model_name, w2v_model=w2v_model, hparams=hparams,
+      input_iterator=iterator, cuda=cuda)
 
   duration = time.time() - start
   print("Done ({:0.4f}s).".format(duration))
