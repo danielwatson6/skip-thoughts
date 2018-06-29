@@ -317,6 +317,6 @@ class EncoderDecoderModel(WordVectorModel):
     losses = tf.nn.sampled_softmax_loss(
       tf.transpose(weights), biases, tf.expand_dims(labels, axis=1),
       rnn_outputs, self.hparams['softmax_samples'],
-      self.hparams['voabulary_size'])
+      self.hparams['vocabulary_size'])
 
     return tf.reduce_mean(mask * losses)  # Hadamard product

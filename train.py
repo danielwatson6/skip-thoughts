@@ -1,4 +1,4 @@
-"""Script for training a skip-thoughts model or a VAE."""
+"""Script for training a skip-thoughts or autoencoder model."""
 
 import argparse
 import itertools
@@ -26,7 +26,7 @@ parser.add_argument(
   help="Initial learning rate.")
 
 parser.add_argument(
-  '--vocabulary_size', type=int, default=20000,
+  '--vocabulary_size', type=int, default=100000,
   help="Keep only the n most common words of the training data.")
 
 parser.add_argument(
@@ -55,7 +55,7 @@ parser.add_argument(
        "Note this doubles the dimension of the output vectors.")
 
 parser.add_argument(
-  '--softmax_samples', type=int, default=0,
+  '--softmax_samples', type=int, default=64,
   help="Set to n > 0 to use sampled softmax with n candidate samples.")
 
 parser.add_argument(
@@ -69,6 +69,10 @@ parser.add_argument(
 parser.add_argument(
   '--eos_token', type=argparse_bool, default=True,
   help="Set to use the end-of-string token when running on inference.")
+
+parser.add_argument(
+  '--epochs', type=int, default=1,
+  help="Number of epochs to train the model for.")
 
 # Performance args
 
@@ -88,7 +92,7 @@ parser.add_argument(
 
 parser.add_argument(
   '--model', type=str, default="skip_thoughts",
-  help="Set to 'skip_thoughts' or 'vae'.")
+  help="Set to 'skip_thoughts', 'ae', or 'vae'.")
 
 parser.add_argument(
   '--embeddings_path', type=str, default="word2vecModel",
@@ -127,7 +131,7 @@ def parse_and_pad(seq):
 def skip_thoughts_iterator(filenames):
   """Build the input pipeline for training a skip-thoughts model."""
   dataset = tf.data.TFRecordDataset(filenames)
-  dataset = dataset.map(parse_and_pad)
+  dataset = dataset.map(parse_and_pad).repeat(FLAGS.epochs)
 
   dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
     window_size=FLAGS.batch_size, stride=1))
@@ -140,10 +144,11 @@ def skip_thoughts_iterator(filenames):
   return dataset.make_one_shot_iterator().get_next()
 
 
-def vae_iterator(filenames):
-  """Build the input pipeline for training a variational autoencoder."""
+def ae_iterator(filenames):
+  """Build the input pipeline for training an autoencoder model."""
   dataset = tf.data.TFRecordDataset(filenames)
-  dataset = dataset.map(parse_and_pad)
+  dataset = dataset.map(parse_and_pad).repeat(FLAGS.epochs)
+
   dataset = dataset.batch(FLAGS.batch_size)
 
   if FLAGS.time_major:
@@ -176,7 +181,7 @@ if __name__ == '__main__':
     iterator_fn = skip_thoughts_iterator
   else:
     Model = VAE
-    iterator_fn = vae_iterator
+    iterator_fn = ae_iterator
 
   # Build the graph model.
 
@@ -243,8 +248,4 @@ if __name__ == '__main__':
         "(loss={:0.4f}, time={:0.4f}s)".format(loss_, duration))
 
       if current_step % FLAGS.num_steps_per_save == 0:
-        print("Saving model...")
-        saver.save(
-          sess,
-          os.path.join('output', FLAGS.model_name, 'checkpoint.ckpt'),
-          global_step=m.global_step)
+        m.save()

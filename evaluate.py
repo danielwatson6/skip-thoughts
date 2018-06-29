@@ -125,7 +125,7 @@ MODELS = {
 if FLAGS.model not in MODELS:
   raise ValueError("`{}` is not a valid model.".format(FLAGS.model))
 
-kwargs = {'model_name': FLAGS.model_name}
+kwargs = {'model_name': FLAGS.model_name, 'cuda': True}
 
 # Load word2vec files if the model uses embeddings and hasn't been saved.
 save_dir = os.path.join('output', FLAGS.model_name)
@@ -142,7 +142,7 @@ if uses_embeddings and not model_saved:
 print("Building", FLAGS.model, "model `{}`".format(FLAGS.model_name))
 graph = tf.Graph()
 with graph.as_default():
-  kwargs['input_placeholder'] = tf.placeholder(tf.int64, shape=[2, None])
+  kwargs['input_placeholder'] = tf.placeholder(tf.int64, shape=[None, 2])
   model = MODELS[FLAGS.model](**kwargs)
 
 
