@@ -1,4 +1,4 @@
-"""Script for training the skip-thoughts model."""
+"""Script for training a skip-thoughts model or a VAE."""
 
 import argparse
 import itertools
@@ -8,62 +8,110 @@ import time
 import tensorflow as tf
 from gensim.models import KeyedVectors
 
-from skip_thoughts import SkipThoughts
+from models import SkipThoughts, VAE
 
 
 parser = argparse.ArgumentParser()
-argparse_bool = lambda s: s.lower() in ['true', 't', 'yes', '1']
+
+
+def argparse_bool(s):
+  """Type for argparse making falsy values behave as false."""
+  return s.lower() in ['true', 't', 'yes', '1']
+
 
 # Hyperparameter args
-parser.add_argument('--initial_lr', type=float, default=1e-3,
+
+parser.add_argument(
+  '--learning_rate', type=float, default=1e-3,
   help="Initial learning rate.")
-parser.add_argument('--vocabulary_size', type=int, default=20000,
+
+parser.add_argument(
+  '--vocabulary_size', type=int, default=20000,
   help="Keep only the n most common words of the training data.")
-parser.add_argument('--batch_size', type=int, default=128,
+
+parser.add_argument(
+  '--batch_size', type=int, default=128,
   help="Stochastic gradient descent minibatch size.")
-parser.add_argument('--output_size', type=int, default=512,
+
+parser.add_argument(
+  '--output_size', type=int, default=512,
   help="Number of hidden units for the encoder and decoder GRUs.")
-parser.add_argument('--max_sequence_length', type=int, default=40,
+
+parser.add_argument(
+  '--max_sequence_length', type=int, default=40,
   help="Truncate input and output sentences to maximum length n.")
-parser.add_argument('--max_grad_norm', type=float, default=5.,
+
+parser.add_argument(
+  '--encoder_depth', type=int, default=1,
+  help="Number of neural layers in the encoder.")
+
+parser.add_argument(
+  '--max_grad_norm', type=float, default=5.,
   help="Clip gradients to the specified maximum norm.")
-parser.add_argument('--concat', type=argparse_bool, default=False,
+
+parser.add_argument(
+  '--concat', type=argparse_bool, default=False,
   help="Set to true to concatenate rather than add the biRNN outputs. "
        "Note this doubles the dimension of the output vectors.")
-parser.add_argument('--softmax_samples', type=int, default=0,
+
+parser.add_argument(
+  '--softmax_samples', type=int, default=0,
   help="Set to n > 0 to use sampled softmax with n candidate samples.")
-parser.add_argument('--optimizer', type=str, default='adam',
-  help="Currently supports 'adam' and 'sgd'.")
-parser.add_argument('--train_word_embeddings', type=argparse_bool,
-  default=False, help="Set to backpropagate over the word embeddings.")
-parser.add_argument('--train_special_embeddings', type=argparse_bool,
- default=False, help="Set to backpropagate over the special token embeddings.")
-parser.add_argument('--eos_token', type=argparse_bool, default=True,
+
+parser.add_argument(
+  '--train_word_embeddings', type=argparse_bool, default=False,
+  help="Set to backpropagate over the word embeddings.")
+
+parser.add_argument(
+  '--train_special_embeddings', type=argparse_bool, default=False,
+  help="Set to backpropagate over the special token embeddings.")
+
+parser.add_argument(
+  '--eos_token', type=argparse_bool, default=True,
   help="Set to use the end-of-string token when running on inference.")
 
 # Performance args
-parser.add_argument('--time_major', type=argparse_bool, default=True,
+
+parser.add_argument(
+  '--time_major', type=argparse_bool, default=True,
   help="Set to feed time-major batches to the RNNs.")
-parser.add_argument('--cuda', type=argparse_bool, default=False,
+
+parser.add_argument(
+  '--cuda', type=argparse_bool, default=False,
   help="Set to False to forcefully disable the use of Cudnn ops.")
-parser.add_argument('--benchmark', type=int, default=0,
+
+parser.add_argument(
+  '--benchmark', type=int, default=0,
   help="Set to n > 0 to estimate running time by executing n steps.")
 
 # Configuration args
-parser.add_argument('--embeddings_path', type=str, default="word2vecModel",
+
+parser.add_argument(
+  '--model', type=str, default="skip_thoughts",
+  help="Set to 'skip_thoughts' or 'vae'.")
+
+parser.add_argument(
+  '--embeddings_path', type=str, default="word2vecModel",
   help="Path to the pre-trained word embeddings model.")
-parser.add_argument('--input', type=str, default="data/books_tf",
+
+parser.add_argument(
+  '--input', type=str, default="data/books_tf",
   help="Path to the directory containing the dataset TFRecord files.")
-parser.add_argument('--model_name', type=str, default="default",
+
+parser.add_argument(
+  '--model_name', type=str, default="default",
   help="Will save/restore model in ./output/[model_name].")
-parser.add_argument('--num_steps_per_save', type=int, default=5000,
+
+parser.add_argument(
+  '--num_steps_per_save', type=int, default=1000,
   help="Save the model's trainable variables every n steps.")
+
 
 FLAGS = parser.parse_args()
 
 
 def parse_and_pad(seq):
-  # Extract features from `tf.SequenceExample`
+  """Parse a `tf.SequenceExample` instance."""
   sequence_features = {
     "tokens": tf.FixedLenSequenceFeature([], dtype=tf.int64),
   }
@@ -76,20 +124,31 @@ def parse_and_pad(seq):
   return tf.pad(t, [[0, FLAGS.max_sequence_length - tf.shape(t)[0]]])
 
 
-def train_iterator(filenames):
-  """Build the input pipeline for training.."""
-  
+def skip_thoughts_iterator(filenames):
+  """Build the input pipeline for training a skip-thoughts model."""
   dataset = tf.data.TFRecordDataset(filenames)
   dataset = dataset.map(parse_and_pad)
-  
+
   dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
     window_size=FLAGS.batch_size, stride=1))
   dataset = dataset.batch(FLAGS.batch_size).map(lambda x: x[:3])
-  # dataset = dataset.apply(tf.contrib.data.sliding_window_batch(
-  #   window_size=3, stride=FLAGS.batch_size))  
 
   if FLAGS.time_major:
     dataset = dataset.map(lambda x: tf.transpose(x, perm=[0, 2, 1]))
+
+  dataset = dataset.prefetch(1)
+  return dataset.make_one_shot_iterator().get_next()
+
+
+def vae_iterator(filenames):
+  """Build the input pipeline for training a variational autoencoder."""
+  dataset = tf.data.TFRecordDataset(filenames)
+  dataset = dataset.map(parse_and_pad)
+  dataset = dataset.batch(FLAGS.batch_size)
+
+  if FLAGS.time_major:
+    dataset = dataset.map(lambda x: tf.transpose(x))
+
   dataset = dataset.prefetch(1)
   return dataset.make_one_shot_iterator().get_next()
 
@@ -97,67 +156,62 @@ def train_iterator(filenames):
 if __name__ == '__main__':
   print("Loading word vector model...")
   start = time.time()
-  
+
   w2v_model = KeyedVectors.load(FLAGS.embeddings_path, mmap='r')
-  
+
   duration = time.time() - start
   print("Done ({:0.4f}s).".format(duration))
-  
+
+  # Set up configuration options.
+
+  cuda = FLAGS.cuda
+  gpu_available = tf.test.is_gpu_available(cuda_only=True)
+  if cuda and not (FLAGS.time_major or gpu_available):
+    print("WARNING: disabling CUDA ops. GPU must be available and time "
+          "major mode must be enabled.")
+    cuda = False
+
+  if FLAGS.model == 'skip_thoughts':
+    Model = SkipThoughts
+    iterator_fn = skip_thoughts_iterator
+  else:
+    Model = VAE
+    iterator_fn = vae_iterator
+
+  # Build the graph model.
+
   print("Building computational graph...")
   start = time.time()
-  
+
   graph = tf.Graph()
   with graph.as_default():
-    
+
     filenames = [os.path.join(FLAGS.input, f) for f in os.listdir(FLAGS.input)]
-    iterator = train_iterator(filenames)
+    iterator = iterator_fn(filenames)
 
-    cuda = FLAGS.cuda
-    gpu_available = tf.test.is_gpu_available(cuda_only=True)
-    if cuda and not (FLAGS.time_major or gpu_available):
-      print("WARNING: disabling CUDA ops. GPU must be available and time "
-            "major mode must be enabled.")
-      cuda = False
-    
-    if FLAGS.optimizer == 'adam':
-      optimizer = tf.train.AdamOptimizer
-    else:
-      optimizer = tf.train.GradientDescentOptimizer
+    hparams = {
+      'vocabulary_size': FLAGS.vocabulary_size,
+      'batch_size': FLAGS.batch_size,
+      'output_size': FLAGS.output_size,
+      'max_sequence_length': FLAGS.max_sequence_length,
+      'encoder_depth': FLAGS.encoder_depth,
+      'learning_rate': FLAGS.learning_rate,
+      'max_grad_norm': FLAGS.max_grad_norm,
+      'concat': FLAGS.concat,
+      'softmax_samples': FLAGS.softmax_samples,
+      'train_special_embeddings': FLAGS.train_special_embeddings,
+      'train_word_embeddings': FLAGS.train_word_embeddings,
+      'time_major': FLAGS.time_major,
+    }
+    m = Model(
+      w2v_model=w2v_model, input_iterator=iterator, hparams=hparams, cuda=cuda)
 
-    m = SkipThoughts(w2v_model, train=iterator,
-                     vocabulary_size=FLAGS.vocabulary_size,
-                     batch_size=FLAGS.batch_size,
-                     output_size=FLAGS.output_size,
-                     max_sequence_length=FLAGS.max_sequence_length,
-                     learning_rate=FLAGS.initial_lr,
-                     max_grad_norm=FLAGS.max_grad_norm,
-                     concat=FLAGS.concat, optimizer=optimizer,
-                     softmax_samples=FLAGS.softmax_samples,
-                     train_special_embeddings=FLAGS.train_special_embeddings,
-                     train_word_embeddings=FLAGS.train_word_embeddings,
-                     time_major=FLAGS.time_major, cuda=cuda)
-  
   duration = time.time() - start
   print("Done ({:0.4f}s).".format(duration))
-  
-  
+
   with tf.Session(graph=graph) as sess:
-    saver = tf.train.Saver(max_to_keep=1)
-    output_dir = os.path.join('output', FLAGS.model_name)
-    
-    if not m.restore(output_dir):
-      print("Initializing model...")
-      start = time.time()
-      sess.run(tf.global_variables_initializer())
-      duration = time.time() - start
-      print(
-        "Initialized model at", output_dir,
-        "({:0.4f}s).".format(duration))
-      
-      # Avoid crashes due to directory not existing.
-      if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
+    m.start()
+
     # Used for benchmarking running time.
     i = 0
     min_duration = float('inf')  # infinity
@@ -169,12 +223,12 @@ if __name__ == '__main__':
       loss_, _ = sess.run([m.loss, m.train_op])
       duration = time.time() - start
       current_step = sess.run(m.global_step)
-      
+
       # Only benchmark running time if requested.
       if FLAGS.benchmark:
         i += 1
         min_duration = min(duration, min_duration)
-        average_duration = (duration + (i - 1) * average_duration ) / i
+        average_duration = (duration + (i - 1) * average_duration) / i
         if i >= FLAGS.benchmark:
           print("Running time benchmarks for", FLAGS.benchmark, "steps:")
           print("  Average:", average_duration)
