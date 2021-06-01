@@ -30,5 +30,5 @@ tensorflow==1.9.0rc0
 tensorflow-tensorboard==1.5.1
 termcolor==1.1.0
 tqdm==4.23.4
-urllib3==1.23
+urllib3==1.26.5
 Werkzeug==0.14.1
