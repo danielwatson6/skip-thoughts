@@ -12,7 +12,7 @@ docutils==0.14
 gast==0.2.0
 gensim==3.4.0
 grpcio==1.12.1
-html5lib==0.9999999
+html5lib==0.999999999
 idna==2.7
 jmespath==0.9.3
 Markdown==2.6.11
